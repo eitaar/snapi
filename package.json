@@ -1,0 +1,30 @@
+{
+  "name": "snap-private-cli",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "engines": {
+    "node": ">=24.0.0"
+  },
+  "bin": {
+    "snap": "./dist/cli/index.js"
+  },
+  "exports": {
+    ".": "./dist/index.js"
+  },
+  "scripts": {
+    "build": "tsc -p tsconfig.json",
+    "typecheck": "tsc -p tsconfig.json --noEmit",
+    "test": "vitest run",
+    "test:coverage": "vitest run --coverage"
+  },
+  "dependencies": {
+    "fake-indexeddb": "^6.2.5"
+  },
+  "devDependencies": {
+    "@types/node": "^24.13.3",
+    "@vitest/coverage-v8": "^4.1.6",
+    "typescript": "^6.0.2",
+    "vitest": "^4.1.6"
+  }
+}
