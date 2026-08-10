@@ -52,6 +52,7 @@ export function captureWebpackModules(
   });
   backing.self = globals;
   backing.window = globals;
+  backing.globalThis = globals;
 
   try {
     runInNewContext(source, globals, {
