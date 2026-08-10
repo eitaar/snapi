@@ -4,10 +4,23 @@ import { createRequire } from "node:module";
 import { pathToFileURL } from "node:url";
 import { createProcessIo, type CliIo } from "./io.js";
 
-export async function main(argv: readonly string[], io: CliIo): Promise<number> {
+export interface CliDependencies {
+  readonly runRuntimeDoctor?: (io: CliIo) => Promise<number>;
+}
+
+export async function main(
+  argv: readonly string[],
+  io: CliIo,
+  dependencies: CliDependencies = {},
+): Promise<number> {
   if (argv.length === 1 && argv[0] === "--version") {
     io.stdout(io.version);
     return 0;
+  }
+  if (argv.length === 3 && argv[0] === "debug" && argv[1] === "doctor" && argv[2] === "--runtime") {
+    const runRuntimeDoctor = dependencies.runRuntimeDoctor ??
+      (await import("./commands/debug-doctor.js")).runRuntimeDoctor;
+    return runRuntimeDoctor(io);
   }
 
   io.stderr("Usage: snap <session|chat|snap|gateway|debug>");
