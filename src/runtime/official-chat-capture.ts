@@ -20,6 +20,10 @@ export interface OfficialChatCaptureDependencies {
   readonly timeoutMs?: number;
   readonly now?: () => number;
   readonly sleep?: (milliseconds: number) => Promise<void>;
+  readonly prepareChat?: (input: ChatInput) => Promise<{
+    readonly destination: unknown;
+    readonly content: unknown;
+  }>;
 }
 
 export async function captureOfficialChatEnvelope(
@@ -28,21 +32,27 @@ export async function captureOfficialChatEnvelope(
   input: ChatInput,
   dependencies: OfficialChatCaptureDependencies = {},
 ): Promise<EncryptedContent> {
-  const timeoutMs = dependencies.timeoutMs ?? 10_000;
+  const timeoutMs = dependencies.timeoutMs ?? 60_000;
   const now = dependencies.now ?? Date.now;
   const sleep = dependencies.sleep ?? ((milliseconds: number) =>
     new Promise<void>((resolve) => setTimeout(resolve, milliseconds)));
   const startedAt = now();
   const captured: CapturedOfficialRequest[] = [];
-  const [destination, content] = createOfficialChatArguments(input);
+  let callbackStatus: unknown;
+  const prepared = dependencies.prepareChat === undefined
+    ? (() => {
+        const [destination, content] = createOfficialChatArguments(input);
+        return { destination, content };
+      })()
+    : await dependencies.prepareChat(input);
 
   await beginOfficialCaptureOnly(runtime);
   await conversationManager.call<void>(["sendMessageWithContent"], [
-    destination,
-    content,
+    prepared.destination,
+    prepared.content,
     exposeOfficial({
       onSuccess: () => undefined,
-      onError: () => undefined,
+      onError: (status: unknown) => { callbackStatus = status; },
       onQueued: () => undefined,
     }),
   ]);
@@ -58,6 +68,23 @@ export async function captureOfficialChatEnvelope(
   throw new AppError(
     "CRYPTO_RUNTIME_FAILED",
     "Official messaging runtime did not produce a captured CreateContentMessage request",
-    { timeoutMs },
+    {
+      timeoutMs,
+      callbackStatus: typeof callbackStatus === "number" || typeof callbackStatus === "string"
+        ? callbackStatus
+        : callbackStatus === undefined ? "not-called" : typeof callbackStatus,
+      capturedRequests: [...captured.reduce((summary, request) => {
+        const key = `${request.method} ${new URL(request.url).pathname}`;
+        summary.set(key, (summary.get(key) ?? 0) + 1);
+        return summary;
+      }, new Map<string, number>())].map(([path, count]) => ({ path, count })),
+      capturedMetrics: [...new Set(captured.flatMap((request) => {
+        if (new URL(request.url).pathname !== "/graphene/web") return [];
+        const text = new TextDecoder().decode(request.body);
+        return [...text.matchAll(/[A-Za-z][A-Za-z0-9_.-]{4,100}/g)]
+          .map(([value]) => value)
+          .filter((value) => /send_message|e2ee|duplex|failure|failed|error|key_provider/i.test(value));
+      }))].slice(0, 40),
+    },
   );
 }

@@ -1,0 +1,85 @@
+import { dirname, join } from "node:path";
+import { parseArgs } from "node:util";
+import { AssetLoader } from "../../compat/asset-loader.js";
+import { CompatibilityGuard } from "../../compat/guard.js";
+import { loadConfig, loadEnvironmentFile } from "../../config.js";
+import { AppError } from "../../errors.js";
+import { AccountLock } from "../../session/account-lock.js";
+import { loadSession } from "../../session/loader.js";
+import { parseSessionExport } from "../../session/schema.js";
+import { AtomicJsonStore } from "../../session/state-store.js";
+import type { CliIo } from "../io.js";
+
+export interface SessionImportResult {
+  readonly buildId: "8dd50222";
+  readonly assetCount: number;
+}
+
+export interface SessionImportDependencies {
+  readonly importSession?: (path: string) => Promise<SessionImportResult>;
+  readonly output?: "human" | "json";
+}
+
+async function importDefault(path: string): Promise<{
+  readonly result: SessionImportResult;
+  readonly output: "human" | "json";
+}> {
+  loadEnvironmentFile();
+  const config = loadConfig();
+  const session = await loadSession(path);
+  if (session.accountId !== config.accountId) {
+    throw new AppError("INVALID_CONFIG", "Configured account does not match the imported session");
+  }
+  if (session.buildId !== config.buildId) {
+    throw new AppError("UNSUPPORTED_BUILD", "Configured build does not match the imported session");
+  }
+
+  const lock = await new AccountLock(join(dirname(config.sessionFile), "locks"))
+    .acquire(config.accountId);
+  try {
+    const report = await new CompatibilityGuard(new AssetLoader(config.assetDir)).verify(session);
+    await new AtomicJsonStore(config.sessionFile, parseSessionExport).write(session);
+    return {
+      output: config.output,
+      result: { buildId: report.buildId, assetCount: report.assets.length },
+    };
+  } finally {
+    await lock.release();
+  }
+}
+
+export async function runSessionImport(
+  argv: readonly string[],
+  io: CliIo,
+  dependencies: SessionImportDependencies = {},
+): Promise<number> {
+  let positionals: string[];
+  try {
+    positionals = parseArgs({
+      args: [...argv],
+      allowPositionals: true,
+      strict: true,
+      options: {},
+    }).positionals;
+  } catch {
+    io.stderr("Usage: snap session import <export-file>");
+    return 2;
+  }
+  if (positionals.length !== 1 || positionals[0]?.trim() === "") {
+    io.stderr("Usage: snap session import <export-file>");
+    return 2;
+  }
+
+  const imported = dependencies.importSession === undefined
+    ? await importDefault(positionals[0]!)
+    : {
+        result: await dependencies.importSession(positionals[0]!),
+        output: dependencies.output ?? "human",
+      };
+  if (imported.output === "json") {
+    io.stdout(JSON.stringify({ type: "session.imported", ...imported.result }));
+  } else {
+    io.stdout(`Session imported: build ${imported.result.buildId}, ${imported.result.assetCount} assets verified`);
+  }
+  return 0;
+}

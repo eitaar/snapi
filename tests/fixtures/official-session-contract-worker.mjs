@@ -81,13 +81,28 @@ expose(parentPort, {
     await callRemote(args[8], ["setItem", "apply"], [undefined, ["identity-state", "persisted"]]);
     await callRemote(args[9], ["removeItem", "apply"], [undefined, ["e2eeTempKey"]]);
     await callRemote(args[9], ["setItem", "apply"], [undefined, ["session-state", "persisted"]]);
-
+    await callRemote(args[6], ["apply"], [undefined, [{
+      messageId: "received-message",
+      conversationId: "received-conversation",
+      senderId: "received-sender",
+    }]]);
     return {
       fixtureProxy: true,
       handlers: {
         getConversationManager: () => ({
           fixtureProxy: true,
           handlers: { ready: () => true },
+        }),
+        getFeedManager: () => ({
+          fixtureProxy: true,
+          handlers: {
+            syncFeed: async (reason) => {
+              await callRemote(args[2], ["onFeedEntriesUpdated", "apply"], [undefined, [[{
+                id: "feed-entry",
+                content: { text: "received plaintext" },
+              }], "conversation", reason, false]]);
+            },
+          },
         }),
       },
     };

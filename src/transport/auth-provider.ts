@@ -51,6 +51,11 @@ export class AuthProvider implements RequestAuthSource {
     return this.requestAuth();
   }
 
+  async getGatewayToken(): Promise<string> {
+    await this.getRequestAuth();
+    return this.current.auth.gatewayToken;
+  }
+
   refreshOnce(_reason: AuthRefreshReason): Promise<RequestAuth> {
     if (this.refreshPromise !== undefined) return this.refreshPromise;
     this.refreshPromise = (async () => {

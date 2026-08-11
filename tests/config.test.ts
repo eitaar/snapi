@@ -1,7 +1,7 @@
 import { isAbsolute } from "node:path";
 import { describe, expect, it } from "vitest";
 import { AppError } from "../src/errors.js";
-import { loadConfig } from "../src/config.js";
+import { loadConfig, loadEnvironmentFile } from "../src/config.js";
 
 describe("loadConfig", () => {
   it("returns only normalized configuration fields", () => {
@@ -34,6 +34,10 @@ describe("loadConfig", () => {
         SNAP_BUILD_ID: "other",
       }),
     ).toThrowError(AppError);
+  });
+
+  it("allows a missing optional environment file", () => {
+    expect(() => loadEnvironmentFile("definitely-missing-test.env")).not.toThrow();
   });
 });
 

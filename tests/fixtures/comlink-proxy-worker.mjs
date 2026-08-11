@@ -24,6 +24,22 @@ function callRemote(endpoint, path, args = []) {
   });
 }
 
+function callRemoteEncoded(endpoint, path, argumentList) {
+  const id = `fixture-${nextId++}`;
+  return new Promise((resolve, reject) => {
+    const onMessage = (message) => {
+      if (message.id !== id) return;
+      endpoint.off("message", onMessage);
+      if (message.type === "RAW") resolve(message.value);
+      else reject(new Error("fixture remote call failed"));
+    };
+    endpoint.on("message", onMessage);
+    endpoint.start?.();
+    endpoint.postMessage({ id, type: "APPLY", path, argumentList },
+      argumentList.flatMap((entry) => entry.value instanceof MessagePort ? [entry.value] : []));
+  });
+}
+
 function expose(endpoint, handlers) {
   endpoint.on("message", async (message) => {
     const path = Array.isArray(message.path) ? message.path.join(".") : "";
@@ -56,6 +72,22 @@ expose(parentPort, {
         fixtureProxy: true,
         handlers: {
           echo: async (value) => `${await callRemote(delegate, ["readAccountId"])}:${value}`,
+          uploadRoundtrip: async () => {
+            let resolveFinished;
+            const finished = new Promise((resolve) => { resolveFinished = resolve; });
+            const { port1, port2 } = new MessageChannel();
+            expose(port1, {
+              onUploadFinished: (_results, content) => {
+                resolveFinished(content);
+              },
+            });
+            await callRemoteEncoded(delegate, ["uploadMedia"], [
+              { type: "RAW", value: { localMediaReferences: [] } },
+              { type: "RAW", value: undefined },
+              { type: "HANDLER", name: "proxy", value: port2 },
+            ]);
+            return finished;
+          },
         },
       }),
     },

@@ -60,6 +60,14 @@ describe("official Chat capture flow", () => {
       timeoutMs: 2,
       now: () => time++,
       sleep: async () => undefined,
-    })).rejects.toMatchObject({ code: "CRYPTO_RUNTIME_FAILED" });
+    })).rejects.toMatchObject({
+      code: "CRYPTO_RUNTIME_FAILED",
+      details: {
+        timeoutMs: 2,
+        callbackStatus: "not-called",
+        capturedRequests: [],
+        capturedMetrics: [],
+      },
+    });
   });
 });

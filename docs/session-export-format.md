@@ -31,6 +31,15 @@ the fields below without changing their values.
 Header names are preserved exactly. In particular, keep the observed
 `mcs-cof-ids-bin` value when present.
 
+For supported token refresh, `auth.ssoCookieHeader` contains the Cookie header
+from the most recent `https://accounts.snapchat.com/accounts/sso` request and
+`auth.ssoScuid` contains that request's `scuid` header. These values are
+accounts-domain credentials and are distinct from the Web origin cookie and
+the session `accountId`. The refresh response `scuid` must match `accountId`.
+Use `snap session refresh-har <fresh.har>` to extract, refresh, rotate, and
+persist these values as one operation; a failed refresh leaves the existing
+session file untouched.
+
 All four fields are credentials. The CLI must never print their values.
 
 ## Messaging key lifecycle
@@ -137,6 +146,8 @@ This example is deliberately non-functional and contains no real credentials:
     "httpToken": "REDACTED",
     "gatewayToken": "REDACTED",
     "cookieHeader": "REDACTED",
+    "ssoCookieHeader": "REDACTED",
+    "ssoScuid": "11111111-1111-4111-8111-111111111111",
     "requestHeaders": {}
   },
   "assets": [],

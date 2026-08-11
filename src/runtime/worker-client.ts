@@ -129,7 +129,7 @@ export class ContentRuntimeClient {
   }
 
   createPhotoSnap(input: PhotoSnapInput): Promise<EncryptedContent> {
-    return this.call({ method: "createPhotoSnap", input }, [input.contentReference.buffer as ArrayBuffer]);
+    return this.call({ method: "createPhotoSnap", input }, [input.bytes.buffer as ArrayBuffer]);
   }
 
   refreshAuth(): Promise<AuthRefreshResult> {
@@ -138,6 +138,14 @@ export class ContentRuntimeClient {
 
   exportState(): Promise<CryptoStateExport> {
     return this.call({ method: "exportState" });
+  }
+
+  syncMessages(): Promise<void> {
+    return this.call({ method: "syncMessages" });
+  }
+
+  drainChatMessages(): Promise<readonly ChatMessage[]> {
+    return this.call({ method: "drainChatMessages" });
   }
 
   async shutdown(): Promise<void> {

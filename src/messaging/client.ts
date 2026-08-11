@@ -1,6 +1,6 @@
 import { randomUUID } from "node:crypto";
 import { AppError } from "../errors.js";
-import type { CryptoStateExport, EncryptedContent } from "../runtime/content-types.js";
+import type { ChatMessage, CryptoStateExport, EncryptedContent } from "../runtime/content-types.js";
 import type { UnaryCallOptions, UnaryResult } from "../transport/grpc-client.js";
 
 export const MAX_CHAT_UTF8_BYTES = 16_384;
@@ -18,6 +18,10 @@ export interface SendResult {
   readonly status: "confirmed" | "unconfirmed";
 }
 
+export interface ChatMessageEvent extends ChatMessage {
+  readonly type: "chat.message";
+}
+
 interface MessagingRuntime {
   encryptChat(input: {
     readonly recipientId: string;
@@ -26,6 +30,8 @@ interface MessagingRuntime {
     readonly text: string;
   }): Promise<EncryptedContent>;
   exportState(): Promise<CryptoStateExport>;
+  syncMessages(): Promise<void>;
+  drainChatMessages(): Promise<readonly ChatMessage[]>;
 }
 
 interface MessagingGrpc {
@@ -47,9 +53,12 @@ export interface MessagingClientDependencies {
   readonly stateStore: CryptoStateStore;
   readonly sendTyping?: (conversationId: string) => Promise<void>;
   readonly randomUuid?: () => string;
+  readonly pollDelayMs?: number;
 }
 
 export class MessagingClient {
+  private readonly seenMessageIds = new Set<string>();
+
   constructor(private readonly dependencies: MessagingClientDependencies) {}
 
   async sendText(input: SendTextInput): Promise<SendResult> {
@@ -101,5 +110,42 @@ export class MessagingClient {
     const state = await this.dependencies.runtime.exportState();
     await this.dependencies.stateStore.write(state);
     return { clientMessageId, status: "confirmed" };
+  }
+
+  messages(signal?: AbortSignal): AsyncIterableIterator<ChatMessageEvent> {
+    const dependencies = this.dependencies;
+    const seen = this.seenMessageIds;
+    const delayMs = dependencies.pollDelayMs ?? 250;
+    return (async function* (): AsyncGenerator<ChatMessageEvent> {
+      if (signal?.aborted) return;
+      await dependencies.runtime.syncMessages();
+      while (!signal?.aborted) {
+        const messages = await dependencies.runtime.drainChatMessages();
+        if (messages.length === 0) {
+          await new Promise<void>((resolve) => {
+            let timer: ReturnType<typeof setTimeout>;
+            const onAbort = () => {
+              clearTimeout(timer);
+              resolve();
+            };
+            timer = setTimeout(() => {
+              signal?.removeEventListener("abort", onAbort);
+              resolve();
+            }, delayMs);
+            signal?.addEventListener("abort", onAbort, { once: true });
+            if (signal?.aborted) onAbort();
+          });
+          continue;
+        }
+        for (const message of messages) {
+          if (signal?.aborted) return;
+          if (seen.has(message.messageId)) continue;
+          const state = await dependencies.runtime.exportState();
+          await dependencies.stateStore.write(state);
+          seen.add(message.messageId);
+          yield { type: "chat.message", ...message };
+        }
+      }
+    })();
   }
 }

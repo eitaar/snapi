@@ -1,4 +1,4 @@
-import { describe, expect, it } from "vitest";
+import { describe, expect, it, vi } from "vitest";
 import { OfficialWorkerClient } from "../../src/runtime/official-worker-client.js";
 import type { SessionExport } from "../../src/session/types.js";
 
@@ -29,14 +29,44 @@ function session(): SessionExport {
 }
 
 describe("official messaging session", () => {
+  it("rejects initialization when the official Worker fails before ready", async () => {
+    const client = new OfficialWorkerClient({
+      assetDir: ".",
+      workerUrl: new URL("../fixtures/missing-official-worker.mjs", import.meta.url),
+    });
+    try {
+      await expect(client.initializeWasm(session())).rejects.toMatchObject({
+        code: "CRYPTO_RUNTIME_FAILED",
+      });
+    } finally {
+      await client.shutdown();
+    }
+  });
+
   it("restores key material and friend devices through the observed 18-argument contract", async () => {
+    const onMessage = vi.fn();
+    const onFeedEntriesUpdated = vi.fn();
     const client = new OfficialWorkerClient({
       assetDir: ".",
       workerUrl: new URL("../fixtures/official-session-contract-worker.mjs", import.meta.url),
+      onMessage,
+      feedDelegate: { onFeedEntriesUpdated },
     });
     try {
       const manager = await client.initializeMessagingSession(session());
       await expect(manager.call<boolean>(["ready"])).resolves.toBe(true);
+      await client.syncFeed(7);
+      expect(onMessage).toHaveBeenCalledWith({
+        messageId: "received-message",
+        conversationId: "received-conversation",
+        senderId: "received-sender",
+      });
+      expect(onFeedEntriesUpdated).toHaveBeenCalledWith(
+        [{ id: "feed-entry", content: { text: "received plaintext" } }],
+        "conversation",
+        7,
+        false,
+      );
     } finally {
       await client.shutdown();
     }

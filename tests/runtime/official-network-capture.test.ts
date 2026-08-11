@@ -80,4 +80,24 @@ describe("official capture-only network boundary", () => {
 
     expect(networkFetch).not.toHaveBeenCalled();
   });
+
+  it("acknowledges captured Graphene telemetry locally without network traffic", async () => {
+    const networkFetch = vi.fn(async () => new Response(null, { status: 204 }));
+    const boundary = createOfficialNetworkBoundary(true, networkFetch);
+    boundary.beginCaptureOnly();
+
+    const response = await boundary.fetch("https://web.snapchat.com/graphene/web", {
+      method: "POST",
+      body: new Uint8Array([1, 2, 3]),
+    });
+
+    expect(response.status).toBe(200);
+    expect(networkFetch).not.toHaveBeenCalled();
+    expect(boundary.drainCapturedRequests()).toEqual([{
+      url: "https://web.snapchat.com/graphene/web",
+      method: "POST",
+      body: new Uint8Array([1, 2, 3]),
+      responseStatus: 200,
+    }]);
+  });
 });

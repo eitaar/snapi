@@ -44,7 +44,7 @@ describe("build 8dd50222 adapter", () => {
       .resolves.toMatchObject({ text: "t" });
     await expect(adapter.createPhotoSnap({
       recipientId: "r", conversationId: "c", clientMessageId: "id",
-      mimeType: "image/png", width: 1, height: 1, contentReference: new Uint8Array([1]),
+      mimeType: "image/png", width: 1, height: 1, bytes: new Uint8Array([1]),
     })).resolves.toMatchObject({ contentType: "photo-snap" });
     await expect(adapter.refreshAuth()).resolves.toMatchObject({ httpToken: "h" });
     await expect(adapter.exportState()).resolves.toEqual({ localStorage: {}, sessionStorage: {}, indexedDb: { databases: [] } });

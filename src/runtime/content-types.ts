@@ -33,7 +33,7 @@ export interface PhotoSnapInput {
   readonly mimeType: "image/jpeg" | "image/png";
   readonly width: number;
   readonly height: number;
-  readonly contentReference: Uint8Array;
+  readonly bytes: Uint8Array;
 }
 
 export interface ExportedRootWrappingKey {

@@ -1,7 +1,7 @@
 import { describe, expect, it, vi } from "vitest";
 import { AppError } from "../../src/errors.js";
 import { MAX_CHAT_UTF8_BYTES, MessagingClient } from "../../src/messaging/client.js";
-import type { EncryptedContent } from "../../src/runtime/content-types.js";
+import type { ChatMessage, EncryptedContent } from "../../src/runtime/content-types.js";
 
 function dependencies(events: string[]) {
   return {
@@ -18,6 +18,8 @@ function dependencies(events: string[]) {
         events.push("export");
         return { localStorage: {}, sessionStorage: {}, indexedDb: { databases: [] } };
       }),
+      syncMessages: vi.fn(async () => { events.push("sync"); }),
+      drainChatMessages: vi.fn(async (): Promise<readonly ChatMessage[]> => []),
     },
     grpc: {
       unary: vi.fn(async () => {
@@ -104,5 +106,55 @@ describe("MessagingClient", () => {
     expect(deps.runtime.encryptChat).toHaveBeenCalledOnce();
     expect(deps.grpc.unary).toHaveBeenCalledOnce();
     expect(deps.runtime.exportState).not.toHaveBeenCalled();
+  });
+
+  it("persists received plaintext state before ordered emission and deduplicates IDs", async () => {
+    const events: string[] = [];
+    const deps = dependencies(events);
+    const message = {
+      senderId: "sender",
+      conversationId: "conversation",
+      messageId: "message",
+      text: "received text",
+      timestamp: "2026-08-11T00:00:00.000Z",
+    };
+    deps.runtime.drainChatMessages
+      .mockResolvedValueOnce([message, message])
+      .mockResolvedValueOnce([]);
+    const client = new MessagingClient({ ...deps, pollDelayMs: 1 });
+    const iterator = client.messages();
+
+    await expect(iterator.next()).resolves.toEqual({
+      value: { type: "chat.message", ...message },
+      done: false,
+    });
+    expect(events).toEqual(["sync", "export", "persist"]);
+    expect(deps.runtime.syncMessages).toHaveBeenCalledOnce();
+    expect(deps.runtime.exportState).toHaveBeenCalledOnce();
+    await iterator.return?.();
+  });
+
+  it("does not emit plaintext when persistence fails", async () => {
+    const deps = dependencies([]);
+    deps.runtime.drainChatMessages.mockResolvedValueOnce([{
+      senderId: "sender",
+      conversationId: "conversation",
+      messageId: "message",
+      text: "received text",
+      timestamp: "now",
+    }]);
+    deps.stateStore.write.mockRejectedValueOnce(new Error("disk full"));
+    const iterator = new MessagingClient({ ...deps, pollDelayMs: 1 }).messages();
+    await expect(iterator.next()).rejects.toThrow("disk full");
+  });
+
+  it("ends message watching promptly when cancelled", async () => {
+    const deps = dependencies([]);
+    const controller = new AbortController();
+    const iterator = new MessagingClient({ ...deps, pollDelayMs: 60_000 })
+      .messages(controller.signal);
+    const next = iterator.next();
+    controller.abort();
+    await expect(next).resolves.toEqual({ value: undefined, done: true });
   });
 });

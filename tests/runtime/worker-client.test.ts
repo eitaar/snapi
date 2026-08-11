@@ -39,7 +39,7 @@ describe("ContentRuntimeClient", () => {
       mimeType: "image/png",
       width: 1,
       height: 1,
-      contentReference: new Uint8Array([1]),
+      bytes: new Uint8Array([1]),
     });
 
     await expect(fast).resolves.toMatchObject({ contentType: "photo-snap" });

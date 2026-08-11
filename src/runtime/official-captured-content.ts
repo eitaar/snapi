@@ -13,8 +13,9 @@ export function isCapturedCreateContentMessage(
   return request.method.toUpperCase() === "POST" && request.url.includes(CREATE_CONTENT_MESSAGE_PATH);
 }
 
-export function extractCapturedChatEnvelope(
+export function extractCapturedContent(
   requests: readonly CapturedOfficialRequest[],
+  contentType: EncryptedContent["contentType"],
 ): EncryptedContent {
   const request = requests.find(isCapturedCreateContentMessage);
   if (request === undefined) {
@@ -58,7 +59,13 @@ export function extractCapturedChatEnvelope(
   }
   return {
     bytes: envelopes[0]!,
-    contentType: "chat",
+    contentType,
     createContentMessagePayload: dataFrames[0]!,
   };
+}
+
+export function extractCapturedChatEnvelope(
+  requests: readonly CapturedOfficialRequest[],
+): EncryptedContent {
+  return extractCapturedContent(requests, "chat");
 }

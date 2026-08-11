@@ -22,8 +22,17 @@ export function exposeOfficial<T extends object>(value: T): unknown {
   return new OfficialExposedValue(value);
 }
 
-function deserializeArguments(values: readonly SerializedValue[]): unknown[] {
-  return values.map(({ value }) => value);
+function deserializeArguments(
+  values: readonly SerializedValue[],
+  callbackPorts: Set<MessagePort>,
+  remotePorts: Set<MessagePort>,
+): unknown[] {
+  return values.map((entry) => {
+    if (entry.type === "HANDLER" && entry.name === "proxy" && entry.value instanceof MessagePort) {
+      return new OfficialRemote(entry.value, callbackPorts, remotePorts);
+    }
+    return entry.value;
+  });
 }
 
 function thrownValue(error: unknown): SerializedValue {
@@ -43,6 +52,7 @@ function thrownValue(error: unknown): SerializedValue {
 function createExposedProxy(
   exposed: object,
   callbackPorts: Set<MessagePort>,
+  remotePorts: Set<MessagePort>,
 ): readonly [SerializedValue, MessagePort] {
   const { port1, port2 } = new MessageChannel();
   callbackPorts.add(port2);
@@ -76,7 +86,11 @@ function createExposedProxy(
         }
         case "APPLY":
           if (typeof selected !== "function") throw new TypeError("Official proxy path is not callable");
-          result = await selected.apply(owner, deserializeArguments(message.argumentList ?? []));
+          result = await selected.apply(owner, deserializeArguments(
+            message.argumentList ?? [],
+            callbackPorts,
+            remotePorts,
+          ));
           break;
         case "RELEASE":
           result = undefined;
@@ -86,7 +100,7 @@ function createExposedProxy(
       }
       if (result instanceof OfficialExposedValue || typeof result === "function") {
         const nested = result instanceof OfficialExposedValue ? result.value : result;
-        const [wireValue, port] = createExposedProxy(nested as object, callbackPorts);
+        const [wireValue, port] = createExposedProxy(nested as object, callbackPorts, remotePorts);
         port2.postMessage({ id: message.id, ...wireValue }, [port]);
       } else {
         port2.postMessage({ id: message.id, type: "RAW", value: result });
@@ -106,23 +120,29 @@ function createExposedProxy(
 function createCallbackProxy(
   callback: (...args: unknown[]) => unknown,
   callbackPorts: Set<MessagePort>,
+  remotePorts: Set<MessagePort>,
 ): readonly [SerializedValue, MessagePort] {
-  return createExposedProxy(callback, callbackPorts);
+  return createExposedProxy(callback, callbackPorts, remotePorts);
 }
 
 function serializeArguments(
   args: readonly unknown[],
   callbackPorts: Set<MessagePort>,
+  remotePorts: Set<MessagePort>,
 ): readonly [readonly SerializedValue[], readonly TransferListItem[]] {
   const transferList: TransferListItem[] = [];
   const argumentList = args.map((arg): SerializedValue => {
     if (arg instanceof OfficialExposedValue) {
-      const [value, port] = createExposedProxy(arg.value, callbackPorts);
+      const [value, port] = createExposedProxy(arg.value, callbackPorts, remotePorts);
       transferList.push(port);
       return value;
     }
     if (typeof arg === "function") {
-      const [value, port] = createCallbackProxy(arg as (...args: unknown[]) => unknown, callbackPorts);
+      const [value, port] = createCallbackProxy(
+        arg as (...args: unknown[]) => unknown,
+        callbackPorts,
+        remotePorts,
+      );
       transferList.push(port);
       return value;
     }
@@ -176,7 +196,11 @@ export class OfficialRemote {
   call<T>(path: readonly string[], args: readonly unknown[] = []): Promise<T> {
     if (this.closed) return Promise.reject(new AppError("CRYPTO_RUNTIME_FAILED", "Official messaging proxy is closed"));
     const id = String(this.nextId++);
-    const [argumentList, transferList] = serializeArguments(args, this.callbackPorts);
+    const [argumentList, transferList] = serializeArguments(
+      args,
+      this.callbackPorts,
+      this.remotePorts,
+    );
     return new Promise<T>((resolve, reject) => {
       this.pending.set(id, { resolve: (value) => resolve(value as T), reject });
       this.endpoint.postMessage({ id, type: "APPLY", path, argumentList }, transferList);
@@ -249,7 +273,13 @@ interface MessagingArgumentBundle {
   readonly exportState: () => OfficialMessagingStateExport;
 }
 
-function messagingArguments(session: SessionExport): MessagingArgumentBundle {
+function messagingArguments(
+  session: SessionExport,
+  injectedContentDelegate?: object,
+  onMessage: (message: unknown) => unknown = () => undefined,
+  injectedFeedDelegate?: object,
+  injectedConversationDelegate?: object,
+): MessagingArgumentBundle {
   const messaging = session.messaging;
   if (messaging === undefined) {
     throw new AppError(
@@ -273,7 +303,7 @@ function messagingArguments(session: SessionExport): MessagingArgumentBundle {
     purge: async () => undefined,
   };
   const noop = () => undefined;
-  const conversationDelegate = {
+  const conversationDelegate = injectedConversationDelegate ?? {
     onConversationCreated: noop,
     onConversationUpdated: noop,
     onSendStarted: noop,
@@ -282,12 +312,12 @@ function messagingArguments(session: SessionExport): MessagingArgumentBundle {
     onConversationCreationServerConfirmed: noop,
     onConversationReset: noop,
   };
-  const feedDelegate = {
+  const feedDelegate = injectedFeedDelegate ?? {
     onFeedEntriesUpdated: noop,
     onInternalSyncFeed: noop,
     onFeedRequestError: noop,
   };
-  const contentDelegate = { uploadMedia: noop, uploadMediaReferences: noop };
+  const contentDelegate = injectedContentDelegate ?? { uploadMedia: noop, uploadMediaReferences: noop };
   const mediaDelegate = { onMediaContentExpired: noop, onMediaPrefetchComplete: noop };
   const friendLinkDelegate = { fetchFriendLink: noop, fetchSnapchatterInfos: noop };
   const groupDelegate = { onGroupsUpdated: noop, onTopGroupsUpdated: noop };
@@ -334,7 +364,7 @@ function messagingArguments(session: SessionExport): MessagingArgumentBundle {
     exposeOfficial(contentDelegate),
     exposeOfficial(mediaDelegate),
     exposeOfficial(friendLinkDelegate),
-    exposeOfficial(noop),
+    exposeOfficial(onMessage),
     exposeOfficial(rootWrappingKeyStore),
     exposeOfficial(storageDelegate(localStorageValues)),
     exposeOfficial(storageDelegate(sessionStorageValues)),
@@ -368,6 +398,10 @@ export interface OfficialWorkerClientOptions {
   readonly assetDir: string;
   readonly workerUrl?: URL;
   readonly allowNetwork?: boolean;
+  readonly contentDelegate?: object;
+  readonly onMessage?: (message: unknown) => unknown;
+  readonly feedDelegate?: object;
+  readonly conversationDelegate?: object;
 }
 
 export class OfficialWorkerClient {
@@ -377,12 +411,18 @@ export class OfficialWorkerClient {
   private readonly remotePorts = new Set<MessagePort>();
   private readonly ready: Promise<void>;
   private resolveReady!: () => void;
+  private rejectReady!: (error: AppError) => void;
+  private readySettled = false;
   private nextId = 1;
   private closed = false;
 
   private exportMessagingStateSnapshot: (() => OfficialMessagingStateExport) | undefined;
-  constructor(options: OfficialWorkerClientOptions) {
-    this.ready = new Promise((resolve) => { this.resolveReady = resolve; });
+  private feedManager: OfficialRemote | undefined;
+  constructor(private readonly options: OfficialWorkerClientOptions) {
+    this.ready = new Promise((resolve, reject) => {
+      this.resolveReady = resolve;
+      this.rejectReady = reject;
+    });
     this.worker = new Worker(options.workerUrl ?? new URL("./official-worker-entry.js", import.meta.url), {
       workerData: { assetDir: options.assetDir, allowNetwork: options.allowNetwork === true },
     });
@@ -401,6 +441,7 @@ export class OfficialWorkerClient {
 
   private handleMessage(value: unknown): void {
     if (value !== null && typeof value === "object" && "__officialHostReady" in value) {
+      this.readySettled = true;
       this.resolveReady();
       return;
     }
@@ -431,6 +472,10 @@ export class OfficialWorkerClient {
   }
 
   private failAll(error: AppError): void {
+    if (!this.readySettled) {
+      this.readySettled = true;
+      this.rejectReady(error);
+    }
     for (const pending of this.pending.values()) pending.reject(error);
     this.pending.clear();
   }
@@ -439,7 +484,11 @@ export class OfficialWorkerClient {
     if (this.closed) throw new AppError("CRYPTO_RUNTIME_FAILED", "Official messaging Worker is closed");
     await this.ready;
     const id = String(this.nextId++);
-    const [argumentList, transferList] = serializeArguments(args, this.callbackPorts);
+    const [argumentList, transferList] = serializeArguments(
+      args,
+      this.callbackPorts,
+      this.remotePorts,
+    );
     return new Promise<T>((resolve, reject) => {
       this.pending.set(id, {
         resolve: (value) => resolve(value as T),
@@ -471,11 +520,25 @@ export class OfficialWorkerClient {
   }
 
   async initializeMessagingSession(session: SessionExport): Promise<OfficialRemote> {
-    const bundle = messagingArguments(session);
+    const bundle = messagingArguments(
+      session,
+      this.options.contentDelegate,
+      this.options.onMessage,
+      this.options.feedDelegate,
+      this.options.conversationDelegate,
+    );
     const messagingSession = await this.createMessagingSession(bundle.args);
     const conversationManager = await messagingSession.callRemote(["getConversationManager"]);
+    this.feedManager = await messagingSession.callRemote(["getFeedManager"]);
     this.exportMessagingStateSnapshot = bundle.exportState;
     return conversationManager;
+  }
+
+  async syncFeed(reason = 0): Promise<void> {
+    if (this.feedManager === undefined) {
+      throw new AppError("CRYPTO_RUNTIME_FAILED", "Official messaging FeedManager is not initialized");
+    }
+    await this.feedManager.call<void>(["syncFeed"], [reason, undefined, new Map()]);
   }
 
   exportMessagingState(): OfficialMessagingStateExport {
@@ -498,6 +561,7 @@ export class OfficialWorkerClient {
     for (const port of this.remotePorts) port.close();
     this.remotePorts.clear();
     this.exportMessagingStateSnapshot = undefined;
+    this.feedManager = undefined;
     await this.worker.terminate();
   }
 }

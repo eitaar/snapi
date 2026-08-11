@@ -1,4 +1,6 @@
 import { parentPort, workerData } from "node:worker_threads";
+import { readFile } from "node:fs/promises";
+import { join } from "node:path";
 import { AppError } from "../errors.js";
 import { redact } from "../logging/redact.js";
 import { parseSessionExport } from "../session/schema.js";
@@ -11,9 +13,14 @@ import { installBrowserGlobals, type InstalledGlobals } from "./browser-globals.
 import { createBuild8dd50222Adapter } from "./builds/8dd50222.js";
 import { exportIndexedDbSnapshot, importIndexedDbSnapshot } from "./indexeddb-snapshot.js";
 import type { RuntimeRequest, RuntimeResponse, SerializedAppError } from "./protocol.js";
-import type { CryptoStateExport } from "./content-types.js";
+import type { ChatMessage, CryptoStateExport } from "./content-types.js";
 import { captureOfficialChatEnvelope } from "./official-chat-capture.js";
-import { OfficialWorkerClient, type OfficialRemote } from "./official-worker-client.js";
+import { OfficialWorkerClient, exposeOfficial, type OfficialRemote } from "./official-worker-client.js";
+import { OfficialPhotoContentBuilder, type OfficialPhotoMessageContent } from "./official-photo-content.js";
+import { uploadOfficialPhotoContent } from "../media/official-upload.js";
+import { GrpcWebClient } from "../transport/grpc-client.js";
+import { beginOfficialCaptureOnly, drainOfficialCapturedRequests } from "./official-host-control.js";
+import { extractCapturedContent, isCapturedCreateContentMessage } from "./official-captured-content.js";
 
 if (parentPort === null) throw new Error("Content runtime Worker requires a parent port");
 
@@ -25,6 +32,10 @@ let adapter: BuildAdapter | undefined;
 let officialRuntime: OfficialWorkerClient | undefined;
 let officialConversationManager: OfficialRemote | undefined;
 let installedGlobals: InstalledGlobals | undefined;
+let photoBuilder: OfficialPhotoContentBuilder | undefined;
+let photoUploadError: AppError | undefined;
+let chatSyncError: AppError | undefined;
+const chatMessages: ChatMessage[] = [];
 
 function asSerializedError(error: unknown): SerializedAppError {
   const appError = error instanceof AppError
@@ -62,9 +73,89 @@ async function initialize(request: Extract<RuntimeRequest, { method: "initialize
     await importIndexedDbSnapshot(session.indexedDb, installedGlobals.indexedDB);
     const loader = new AssetLoader(data.assetDir);
     await new CompatibilityGuard(loader).verify(session);
+    const nextPhotoBuilder = new OfficialPhotoContentBuilder(
+      await readFile(join(data.assetDir, "41f8a232e0dafca526c7.js"), "utf8"),
+    );
+    const mediaGrpc = new GrpcWebClient({
+      auth: {
+        getRequestAuth: async () => ({
+          httpToken: session.auth.httpToken,
+          cookieHeader: session.auth.cookieHeader,
+          headers: session.auth.requestHeaders,
+        }),
+        refreshOnce: async () => {
+          throw new AppError(
+            "SESSION_REEXPORT_REQUIRED",
+            "Photo upload authentication expired inside the content runtime",
+          );
+        },
+      },
+    });
+    const contentDelegate = {
+      uploadMedia: async (
+        content: OfficialPhotoMessageContent,
+        _unused: unknown,
+        callback: OfficialRemote,
+      ) => {
+        try {
+          if (data.allowNetwork !== true) {
+            throw new AppError("UPLOAD_FAILED", "Photo upload network access is disabled");
+          }
+          const finalized = await uploadOfficialPhotoContent(content, {
+            builder: nextPhotoBuilder,
+            grpc: mediaGrpc,
+          });
+          await callback.call(["onUploadFinished"], [
+            [nextPhotoBuilder.uploadResult(finalized.remoteMediaReferences, true)],
+            finalized.content,
+          ]);
+        } catch (error) {
+          photoUploadError = error instanceof AppError
+            ? error
+            : new AppError("UPLOAD_FAILED", "Official photo upload delegate failed", {
+                errorName: error instanceof Error ? error.name : "UnknownError",
+              });
+          await callback.call(["onUploadFinished"], [
+            [nextPhotoBuilder.uploadResult(undefined, false)],
+            content,
+          ]).catch(() => undefined);
+        }
+      },
+      uploadMediaReferences: () => undefined,
+    };
+    const noop = () => undefined;
+    const conversationDelegate = {
+      onConversationCreated: noop,
+      onConversationUpdated: (
+        _current: unknown,
+        _metadata: unknown,
+        messages: unknown,
+      ) => {
+        if (Array.isArray(messages)) {
+          chatMessages.push(...nextPhotoBuilder.decodeChatMessages(messages));
+        }
+      },
+      onSendStarted: noop,
+      onSendComplete: noop,
+      onConversationRemoved: noop,
+      onConversationCreationServerConfirmed: noop,
+      onConversationReset: noop,
+    };
+    const feedDelegate = {
+      onFeedEntriesUpdated: noop,
+      onInternalSyncFeed: noop,
+      onFeedRequestError: (_request: unknown, status: unknown) => {
+        chatSyncError = nextPhotoBuilder.isUnauthorizedCallbackStatus(status)
+          ? new AppError("SESSION_EXPIRED", "Official message synchronization was unauthorized")
+          : new AppError("GRPC_FAILED", "Official message synchronization failed");
+      },
+    };
     const nextOfficialRuntime = new OfficialWorkerClient({
       assetDir: data.assetDir,
       allowNetwork: data.allowNetwork === true,
+      contentDelegate,
+      conversationDelegate,
+      feedDelegate,
     });
     try {
       await nextOfficialRuntime.initializeWasm(session);
@@ -76,6 +167,7 @@ async function initialize(request: Extract<RuntimeRequest, { method: "initialize
       officialConversationManager = await nextOfficialRuntime.initializeMessagingSession(session);
     }
     officialRuntime = nextOfficialRuntime;
+    photoBuilder = nextPhotoBuilder;
     return { buildId: "8dd50222", initializedAt: new Date().toISOString() };
   } catch (error) {
     installedGlobals.restore();
@@ -83,6 +175,53 @@ async function initialize(request: Extract<RuntimeRequest, { method: "initialize
 
     throw error;
   }
+}
+
+async function createOfficialPhotoSnap(
+  input: Extract<RuntimeRequest, { method: "createPhotoSnap" }>["input"],
+): Promise<unknown> {
+  if (officialRuntime === undefined || officialConversationManager === undefined || photoBuilder === undefined) {
+    throw new AppError(
+      "SESSION_REEXPORT_REQUIRED",
+      "Session export is missing login-time messaging key initialization state",
+    );
+  }
+  photoUploadError = undefined;
+  const prepared = await photoBuilder.prepare(input);
+  await beginOfficialCaptureOnly(officialRuntime);
+  let sendError: AppError | undefined;
+  void officialConversationManager.call<void>(["sendMessageWithContent"], [
+    prepared.destination,
+    prepared.content,
+    exposeOfficial({
+      onSuccess: () => undefined,
+      onQueued: () => undefined,
+      onError: () => {
+        sendError = new AppError("CRYPTO_RUNTIME_FAILED", "Official photo message creation failed");
+      },
+    }),
+  ]).catch((error: unknown) => {
+    sendError = error instanceof AppError
+      ? error
+      : new AppError("CRYPTO_RUNTIME_FAILED", "Official photo message creation failed");
+  });
+
+  const startedAt = Date.now();
+  const captured = [];
+  while (Date.now() - startedAt <= 60_000) {
+    captured.push(...await drainOfficialCapturedRequests(officialRuntime));
+    if (captured.some(isCapturedCreateContentMessage)) {
+      return extractCapturedContent(captured, "photo-snap");
+    }
+    if (photoUploadError !== undefined) throw photoUploadError;
+    if (sendError !== undefined) throw sendError;
+    await new Promise<void>((resolve) => setTimeout(resolve, 10));
+  }
+  throw new AppError(
+    "CRYPTO_RUNTIME_FAILED",
+    "Official messaging runtime did not produce a photo CreateContentMessage request",
+    { timeoutMs: 60_000 },
+  );
 }
 
 async function exportRuntimeState(): Promise<CryptoStateExport> {
@@ -120,15 +259,29 @@ async function dispatch(request: RuntimeRequest): Promise<unknown> {
         officialRuntime,
         officialConversationManager,
         request.input,
+        { prepareChat: (input) => photoBuilder!.prepareChat(input) },
       );
     case "decryptChat":
       return requireAdapter().decryptChat(request.input);
     case "createPhotoSnap":
-      return requireAdapter().createPhotoSnap(request.input);
+      return createOfficialPhotoSnap(request.input);
     case "refreshAuth":
       return requireAdapter().refreshAuth();
     case "exportState":
       return exportRuntimeState();
+    case "syncMessages":
+      if (officialRuntime === undefined) {
+        throw new AppError("CRYPTO_RUNTIME_FAILED", "Content runtime is not initialized");
+      }
+      chatSyncError = undefined;
+      return officialRuntime.syncFeed(0);
+    case "drainChatMessages":
+      if (chatSyncError !== undefined) {
+        const error = chatSyncError;
+        chatSyncError = undefined;
+        throw error;
+      }
+      return chatMessages.splice(0);
     case "shutdown":
       await officialRuntime?.shutdown();
       installedGlobals?.restore();
@@ -136,6 +289,10 @@ async function dispatch(request: RuntimeRequest): Promise<unknown> {
       adapter = undefined;
       officialRuntime = undefined;
       officialConversationManager = undefined;
+      photoBuilder = undefined;
+      photoUploadError = undefined;
+      chatSyncError = undefined;
+      chatMessages.splice(0);
       return undefined;
   }
 }

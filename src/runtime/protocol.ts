@@ -15,6 +15,8 @@ export type RuntimeCommand =
   | { readonly method: "createPhotoSnap"; readonly input: PhotoSnapInput }
   | { readonly method: "refreshAuth" }
   | { readonly method: "exportState" }
+  | { readonly method: "syncMessages" }
+  | { readonly method: "drainChatMessages" }
   | { readonly method: "shutdown" };
 
 export type RuntimeRequest = RuntimeCommand & { readonly id: number };

@@ -36,6 +36,19 @@ describe("AuthProvider", () => {
     expect(refresh).not.toHaveBeenCalled();
   });
 
+  it("returns the matching gateway token after applying the freshness policy", async () => {
+    const provider = new AuthProvider(session(), {
+      refresh: async (value) => ({
+        ...value,
+        exportedAt: "2026-08-11T02:00:00.000Z",
+        auth: { ...value.auth, gatewayToken: "gateway-new" },
+      }),
+      now: () => Date.parse("2026-08-11T02:00:00.000Z"),
+    });
+
+    await expect(provider.getGatewayToken()).resolves.toBe("gateway-new");
+  });
+
   it("refreshes a session older than one hour and persists before publishing it", async () => {
     const refreshed = {
       ...session(),

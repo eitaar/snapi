@@ -22,6 +22,8 @@ const CAPTURE_READ_ONLY_PATHS = new Set([
   "/messagingcoreservice.MessagingCoreService/GetGroups",
 ]);
 
+const CAPTURE_LOCAL_ACK_PATHS = new Set(["/graphene/web"]);
+
 export function createGuardedOfficialFetch(
   allowNetwork: boolean | undefined,
   networkFetch: OfficialFetch,
@@ -64,6 +66,10 @@ export function createOfficialNetworkBoundary(
           const response = await networkFetch(request);
           captured.push({ ...capturedRequest, responseStatus: response.status });
           return response;
+        }
+        if (request.method === "POST" && CAPTURE_LOCAL_ACK_PATHS.has(new URL(request.url).pathname)) {
+          captured.push({ ...capturedRequest, responseStatus: 200 });
+          return new Response(null, { status: 200 });
         }
         captured.push(capturedRequest);
         throw new Error("Official messaging request was captured and blocked");
