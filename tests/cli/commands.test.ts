@@ -142,4 +142,80 @@ describe("CLI commands", () => {
     });
     expect(state.client.close).toHaveBeenCalledOnce();
   });
+
+  it("blocks auth-gap live probing unless explicitly enabled", async () => {
+    const output = io();
+    const readFile = vi.fn(async () => new Uint8Array());
+    const code = await main([
+      "debug", "auth-gap",
+      "--request", "private/request.json",
+      "--session", "private/session.json",
+      "--mode", "node-bearer",
+      "--auth-epoch", "edge-capture-1",
+    ], output.value, { readFile, env: {} });
+
+    expect(code).toBe(3);
+    expect(output.stderr.join("\n")).toContain("INVALID_CONFIG");
+    expect(readFile).not.toHaveBeenCalled();
+  });
+
+  it("routes a safe auth-gap result without echoing credentials", async () => {
+    const output = io();
+    const request = {
+      url: "https://web.snapchat.com/messagingcoreservice.MessagingCoreService/DeltaSync",
+      method: "POST",
+      headers: {
+        accept: "application/grpc-web+proto",
+        authorization: "request-token-must-not-echo",
+      },
+      bodyBase64: Buffer.from([1, 2, 3]).toString("base64"),
+    };
+    const session = {
+      formatVersion: 1,
+      accountId: "account-1",
+      buildId: "8dd50222",
+      exportedAt: "2026-08-11T00:00:00.000Z",
+      auth: {
+        httpToken: "session-token-must-not-echo",
+        gatewayToken: "gateway-token-must-not-echo",
+        cookieHeader: "web-cookie-must-not-echo",
+        requestHeaders: {},
+      },
+      assets: [],
+      localStorage: {},
+      indexedDb: { databases: [] },
+    };
+    const encoded = new Map([
+      ["private/request.json", new TextEncoder().encode(JSON.stringify(request))],
+      ["private/session.json", new TextEncoder().encode(JSON.stringify(session))],
+    ]);
+    const readFile = vi.fn(async (path: string) => encoded.get(path)!);
+    const fetch = vi.fn(async (_url: string | URL | Request, init?: RequestInit) => {
+      const headers = new Headers(init?.headers);
+      expect(headers.get("authorization")).toBe("Bearer session-token-must-not-echo");
+      return new Response(null, { status: 401 });
+    });
+
+    const code = await main([
+      "debug", "auth-gap",
+      "--request", "private/request.json",
+      "--session", "private/session.json",
+      "--mode", "node-bearer",
+      "--auth-epoch", "edge-capture-1",
+    ], output.value, {
+      readFile,
+      fetch,
+      now: () => new Date("2026-08-11T01:00:00.000Z"),
+      env: { SNAP_LIVE_TESTS: "1" },
+    });
+
+    expect(code).toBe(0);
+    expect(JSON.parse(output.stdout[0]!)).toMatchObject({
+      type: "debug.auth-gap",
+      context: "node-bearer",
+      status: 401,
+    });
+    expect(output.stdout.join("\n")).not.toContain("must-not-echo");
+    expect(fetch).toHaveBeenCalledOnce();
+  });
 });

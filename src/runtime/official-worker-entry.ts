@@ -152,6 +152,9 @@ function handleHostControl(message: unknown): boolean {
     case "drainCapturedRequests":
       value = networkBoundary.drainCapturedRequests();
       break;
+    case "drainObservedRequests":
+      value = networkBoundary.drainObservedRequests();
+      break;
     default:
       return false;
   }

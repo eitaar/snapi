@@ -18,6 +18,9 @@ export interface CliDependencies {
   readonly runSessionCheck?: (io: CliIo) => Promise<number>;
   readonly createClient?: () => Promise<ConfiguredCliClient>;
   readonly readFile?: (path: string) => Promise<Uint8Array>;
+  readonly fetch?: typeof globalThis.fetch;
+  readonly now?: () => Date;
+  readonly env?: NodeJS.ProcessEnv;
   readonly signal?: AbortSignal;
 }
 
@@ -64,6 +67,19 @@ export async function main(
     const runRuntimeDoctor = dependencies.runRuntimeDoctor ??
       (await import("./commands/debug-doctor.js")).runRuntimeDoctor;
     return runRuntimeDoctor(io);
+  }
+  if (argv.length >= 2 && argv[0] === "debug" && argv[1] === "auth-gap") {
+    try {
+      const runDebugAuthGap = (await import("./commands/debug-auth-gap.js")).runDebugAuthGap;
+      return await runDebugAuthGap(argv.slice(2), io, {
+        ...(dependencies.readFile === undefined ? {} : { readFile: dependencies.readFile }),
+        ...(dependencies.fetch === undefined ? {} : { fetch: dependencies.fetch }),
+        ...(dependencies.now === undefined ? {} : { now: dependencies.now }),
+        ...(dependencies.env === undefined ? {} : { env: dependencies.env }),
+      });
+    } catch (error) {
+      return emitError(io, error);
+    }
   }
   if (argv.length === 2 && argv[0] === "session" && argv[1] === "check") {
     try {

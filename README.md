@@ -37,6 +37,7 @@ node dist/cli/index.js chat watch --json
 node dist/cli/index.js snap send <recipient-uuid> photo.png --conversation-id <conversation-uuid>
 node dist/cli/index.js gateway status
 node dist/cli/index.js debug doctor --runtime
+$env:SNAP_LIVE_TESTS='1'; node dist/cli/index.js debug auth-gap --request private/edge-delta-probe.json --session private/session.json --mode node-web-cookie --auth-epoch edge-capture-1
 ```
 
 `session check` performs shape, account, lock, asset hash, module, and WASM
@@ -70,6 +71,10 @@ npm run build
 
 Live verification requires a newly captured SSO cookie and managed recipient.
 An expired export fails with `SESSION_REEXPORT_REQUIRED` before message send.
+
+`debug auth-gap` is limited to one explicitly enabled, read-only request against
+the two allowlisted MessagingCoreService paths. It emits only sanitized status
+and request metadata; it does not retry or print credentials.
 
 See [session export format](docs/session-export-format.md),
 [security boundaries](docs/security-boundaries.md), and the

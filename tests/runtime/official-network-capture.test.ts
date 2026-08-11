@@ -2,6 +2,108 @@ import { describe, expect, it, vi } from "vitest";
 import { createOfficialNetworkBoundary } from "../../src/runtime/official-network.js";
 
 describe("official capture-only network boundary", () => {
+  it("records only safe path and status metadata for normal network requests", async () => {
+    const boundary = createOfficialNetworkBoundary(true, async () =>
+      new Response(null, { status: 401 }));
+
+    await expect(boundary.fetch(
+      "https://web.snapchat.com/web-chat-session/refresh?secret=must-not-leak#fragment",
+      { method: "POST", headers: { authorization: "Bearer must-not-leak" } },
+    )).resolves.toMatchObject({ status: 401 });
+
+    expect(boundary.drainObservedRequests()).toEqual([{
+      path: "https://web.snapchat.com/web-chat-session/refresh",
+      method: "POST",
+      responseStatus: 401,
+    }]);
+    expect(JSON.stringify(boundary.drainObservedRequests())).not.toContain("must-not-leak");
+  });
+
+  it("records a nested transport error code without retaining its message", async () => {
+    const failure = Object.assign(new TypeError("secret-bearing failure message"), {
+      cause: { code: "UND_ERR_CONNECT_TIMEOUT" },
+    });
+    const boundary = createOfficialNetworkBoundary(true, async () => {
+      throw failure;
+    });
+
+    await expect(boundary.fetch("https://web.snapchat.com/safe", { method: "POST" }))
+      .rejects.toBe(failure);
+
+    expect(boundary.drainObservedRequests()).toEqual([{
+      path: "https://web.snapchat.com/safe",
+      method: "POST",
+      errorName: "TypeError",
+      errorCode: "UND_ERR_CONNECT_TIMEOUT",
+    }]);
+    expect(JSON.stringify(boundary.drainObservedRequests())).not.toContain("secret-bearing");
+  });
+
+  it("classifies known request construction failures without retaining messages", async () => {
+    const boundary = createOfficialNetworkBoundary(true, async () => {
+      throw new TypeError("RequestInit: duplex option is required when sending a body.");
+    });
+
+    await expect(boundary.fetch("https://web.snapchat.com/safe", { method: "POST" }))
+      .rejects.toThrow("duplex");
+
+    expect(boundary.drainObservedRequests()).toEqual([{
+      path: "https://web.snapchat.com/safe",
+      method: "POST",
+      errorName: "TypeError",
+      errorReason: "request-duplex-required",
+    }]);
+  });
+
+  it("observes an existing Request without consuming its body", async () => {
+    const networkFetch = vi.fn(async (input: string | URL | Request) => {
+      const request = input instanceof Request ? input : new Request(input);
+      expect([...new Uint8Array(await request.arrayBuffer())]).toEqual([1, 2, 3]);
+      return new Response(null, { status: 200 });
+    });
+    const boundary = createOfficialNetworkBoundary(true, networkFetch);
+    const request = new Request("https://web.snapchat.com/safe", {
+      method: "POST",
+      body: new Uint8Array([1, 2, 3]),
+    });
+
+    await expect(boundary.fetch(request)).resolves.toMatchObject({ status: 200 });
+    expect(networkFetch).toHaveBeenCalledWith(request, undefined);
+  });
+
+  it("classifies the remaining safe transport failure categories", async () => {
+    const cases = [
+      [new TypeError("Body is unusable"), "request-body-unusable", undefined],
+      [new TypeError("Request with GET/HEAD method cannot have body."), "unexpected-request-body", undefined],
+      [new TypeError("fetch failed"), "fetch-failed", undefined],
+      [Object.assign(new Error("opaque"), { code: "E_DIRECT" }), undefined, "E_DIRECT"],
+      [Object.assign(new Error("opaque"), { code: "not safe" }), undefined, undefined],
+      ["opaque", undefined, undefined],
+    ] as const;
+
+    for (const [failure, errorReason, errorCode] of cases) {
+      const boundary = createOfficialNetworkBoundary(true, async () => { throw failure; });
+      await expect(boundary.fetch(new URL("https://web.snapchat.com/safe"))).rejects.toBe(failure);
+      expect(boundary.drainObservedRequests()).toEqual([{
+        path: "https://web.snapchat.com/safe",
+        method: "GET",
+        errorName: failure instanceof Error ? failure.name : "UnknownError",
+        ...(errorReason === undefined ? {} : { errorReason }),
+        ...(errorCode === undefined ? {} : { errorCode }),
+      }]);
+    }
+  });
+
+  it("blocks normal network requests when network access is disabled", async () => {
+    const networkFetch = vi.fn(async () => new Response());
+    const boundary = createOfficialNetworkBoundary(false, networkFetch);
+
+    await expect(boundary.fetch("https://web.snapchat.com/safe"))
+      .rejects.toThrow("network access is disabled");
+    expect(networkFetch).not.toHaveBeenCalled();
+    expect(boundary.drainObservedRequests()).toEqual([]);
+  });
+
   it("captures a request body in memory and never invokes network fetch", async () => {
     const networkFetch = vi.fn(async () => new Response(null, { status: 204 }));
     const boundary = createOfficialNetworkBoundary(true, networkFetch);

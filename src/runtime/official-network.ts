@@ -10,11 +10,21 @@ export interface CapturedOfficialRequest {
   readonly responseStatus?: number;
 }
 
+export interface ObservedOfficialRequest {
+  readonly path: string;
+  readonly method: string;
+  readonly responseStatus?: number;
+  readonly errorName?: string;
+  readonly errorCode?: string;
+  readonly errorReason?: string;
+}
+
 export interface OfficialNetworkBoundary {
   readonly fetch: OfficialFetch;
   readonly captureOnly: boolean;
   beginCaptureOnly(): void;
   drainCapturedRequests(): readonly CapturedOfficialRequest[];
+  drainObservedRequests(): readonly ObservedOfficialRequest[];
 }
 
 const CAPTURE_READ_ONLY_PATHS = new Set([
@@ -23,6 +33,29 @@ const CAPTURE_READ_ONLY_PATHS = new Set([
 ]);
 
 const CAPTURE_LOCAL_ACK_PATHS = new Set(["/graphene/web"]);
+
+function safeErrorCode(error: unknown): string | undefined {
+  if (error === null || typeof error !== "object") return undefined;
+  const candidate = error as { readonly code?: unknown; readonly cause?: unknown };
+  const cause = candidate.cause !== null && typeof candidate.cause === "object"
+    ? candidate.cause as { readonly code?: unknown }
+    : undefined;
+  const code = typeof candidate.code === "string"
+    ? candidate.code
+    : typeof cause?.code === "string" ? cause.code : undefined;
+  return code !== undefined && /^[A-Z][A-Z0-9_]{1,80}$/.test(code) ? code : undefined;
+}
+
+function safeErrorReason(error: unknown): string | undefined {
+  if (!(error instanceof Error)) return undefined;
+  if (/duplex option is required/i.test(error.message)) return "request-duplex-required";
+  if (/body is unusable|disturbed or locked|already been used/i.test(error.message)) {
+    return "request-body-unusable";
+  }
+  if (/GET\/HEAD method cannot have body/i.test(error.message)) return "unexpected-request-body";
+  if (error.message === "fetch failed") return "fetch-failed";
+  return undefined;
+}
 
 export function createGuardedOfficialFetch(
   allowNetwork: boolean | undefined,
@@ -42,6 +75,7 @@ export function createOfficialNetworkBoundary(
 ): OfficialNetworkBoundary {
   let captureOnly = false;
   const captured: CapturedOfficialRequest[] = [];
+  const observed: ObservedOfficialRequest[] = [];
   return {
     get captureOnly() { return captureOnly; },
     beginCaptureOnly() {
@@ -77,10 +111,37 @@ export function createOfficialNetworkBoundary(
       if (allowNetwork !== true) {
         throw new Error("Official messaging network access is disabled");
       }
-      return networkFetch(input, init);
+      const requestUrl = typeof input === "string"
+        ? input
+        : input instanceof URL ? input.href : input.url;
+      const requestMethod = (init?.method ?? (input instanceof Request ? input.method : "GET"))
+        .toUpperCase();
+      const path = (() => {
+        const url = new URL(requestUrl);
+        return `${url.origin}${url.pathname}`;
+      })();
+      try {
+        const response = await networkFetch(input, init);
+        observed.push({ path, method: requestMethod, responseStatus: response.status });
+        return response;
+      } catch (error) {
+        const errorCode = safeErrorCode(error);
+        const errorReason = safeErrorReason(error);
+        observed.push({
+          path,
+          method: requestMethod,
+          errorName: error instanceof Error ? error.name : "UnknownError",
+          ...(errorCode === undefined ? {} : { errorCode }),
+          ...(errorReason === undefined ? {} : { errorReason }),
+        });
+        throw error;
+      }
     },
     drainCapturedRequests() {
       return captured.splice(0, captured.length);
+    },
+    drainObservedRequests() {
+      return observed.splice(0, observed.length);
     },
   };
 }

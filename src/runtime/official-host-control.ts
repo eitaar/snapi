@@ -1,4 +1,7 @@
-import type { CapturedOfficialRequest } from "./official-network.js";
+import type {
+  CapturedOfficialRequest,
+  ObservedOfficialRequest,
+} from "./official-network.js";
 import type { OfficialWorkerClient } from "./official-worker-client.js";
 
 interface OfficialHostCallable {
@@ -17,4 +20,10 @@ export function drainOfficialCapturedRequests(
   client: OfficialWorkerClient,
 ): Promise<readonly CapturedOfficialRequest[]> {
   return hostCallable(client).apply(["__host", "drainCapturedRequests"]);
+}
+
+export function drainOfficialObservedRequests(
+  client: OfficialWorkerClient,
+): Promise<readonly ObservedOfficialRequest[]> {
+  return hostCallable(client).apply(["__host", "drainObservedRequests"]);
 }
