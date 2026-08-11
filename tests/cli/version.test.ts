@@ -14,3 +14,15 @@ describe("snap --version", () => {
     expect(stdout).toEqual(["0.1.0"]);
   });
 });
+
+  it("prints usage for unknown commands", async () => {
+    const stderr: string[] = [];
+    const code = await main(["unknown"], {
+      version: "0.1.0",
+      stdout: () => undefined,
+      stderr: (line) => stderr.push(line),
+    });
+
+    expect(code).toBe(2);
+    expect(stderr).toEqual(["Usage: snap <session|chat|snap|gateway|debug>"]);
+  });

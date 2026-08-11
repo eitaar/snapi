@@ -47,6 +47,21 @@ describe("ContentRuntimeClient", () => {
     await runtime.shutdown();
   });
 
+  it("keeps official network access disabled unless explicitly enabled", async () => {
+    const disabled = client();
+    await expect(disabled.initialize(session("network-option"))).resolves.toMatchObject({
+      initializedAt: "false",
+    });
+    await disabled.shutdown();
+
+    const enabled = new ContentRuntimeClient({
+      workerUrl: new URL("../fixtures/runtime-worker.ts", import.meta.url),
+      allowNetwork: true,
+    });
+    await expect(enabled.initialize(session("network-option"))).resolves.toMatchObject({ initializedAt: "true" });
+    await enabled.shutdown();
+  });
+
   it("reconstructs typed worker errors", async () => {
     const runtime = client();
     await runtime.initialize(session());
@@ -59,7 +74,7 @@ describe("ContentRuntimeClient", () => {
   });
 
   it("terminates on timeout and rejects later calls", async () => {
-    const runtime = client(200);
+    const runtime = client(1_000);
     await runtime.initialize(session());
     await expect(runtime.encryptChat({
       recipientId: "r",

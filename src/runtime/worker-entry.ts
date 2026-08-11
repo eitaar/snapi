@@ -9,13 +9,21 @@ import type { ModuleFactory } from "../compat/types.js";
 import type { BuildAdapter } from "./build-adapter.js";
 import { installBrowserGlobals, type InstalledGlobals } from "./browser-globals.js";
 import { createBuild8dd50222Adapter } from "./builds/8dd50222.js";
-import { importIndexedDbSnapshot } from "./indexeddb-snapshot.js";
+import { exportIndexedDbSnapshot, importIndexedDbSnapshot } from "./indexeddb-snapshot.js";
 import type { RuntimeRequest, RuntimeResponse, SerializedAppError } from "./protocol.js";
+import type { CryptoStateExport } from "./content-types.js";
+import { captureOfficialChatEnvelope } from "./official-chat-capture.js";
+import { OfficialWorkerClient, type OfficialRemote } from "./official-worker-client.js";
 
 if (parentPort === null) throw new Error("Content runtime Worker requires a parent port");
 
-const data = workerData as { readonly assetDir?: string } | undefined;
+const data = workerData as {
+  readonly assetDir?: string;
+  readonly allowNetwork?: boolean;
+} | undefined;
 let adapter: BuildAdapter | undefined;
+let officialRuntime: OfficialWorkerClient | undefined;
+let officialConversationManager: OfficialRemote | undefined;
 let installedGlobals: InstalledGlobals | undefined;
 
 function asSerializedError(error: unknown): SerializedAppError {
@@ -40,7 +48,7 @@ function requireAdapter(): BuildAdapter {
 }
 
 async function initialize(request: Extract<RuntimeRequest, { method: "initialize" }>): Promise<unknown> {
-  if (adapter !== undefined) throw new AppError("WORKER_PROTOCOL_ERROR", "Content runtime is already initialized");
+  if (officialRuntime !== undefined) throw new AppError("WORKER_PROTOCOL_ERROR", "Content runtime is already initialized");
   if (data?.assetDir === undefined) {
     throw new AppError("INVALID_CONFIG", "Worker asset directory is required");
   }
@@ -54,34 +62,47 @@ async function initialize(request: Extract<RuntimeRequest, { method: "initialize
     await importIndexedDbSnapshot(session.indexedDb, installedGlobals.indexedDB);
     const loader = new AssetLoader(data.assetDir);
     await new CompatibilityGuard(loader).verify(session);
-    const assets = new Map<string, Uint8Array>();
-    for (const record of SUPPORTED_ASSETS) assets.set(record.filename, await loader.loadVerified(record));
-
-    const wasmRecord = SUPPORTED_ASSETS.find(({ kind }) => kind === "wasm")!;
-    const wasmModule = new WebAssembly.Module(Uint8Array.from(assets.get(wasmRecord.filename)!));
-    const imports = WebAssembly.Module.imports(wasmModule);
-    if (imports.length !== 0) {
-      throw new AppError("UNSUPPORTED_BUILD", "WASM imports require a verified build-specific binding", {
-        wasmImports: imports.map(({ module, name, kind }) => `${module}.${name}:${kind}`),
-      });
+    const nextOfficialRuntime = new OfficialWorkerClient({
+      assetDir: data.assetDir,
+      allowNetwork: data.allowNetwork === true,
+    });
+    try {
+      await nextOfficialRuntime.initializeWasm(session);
+    } catch (error) {
+      await nextOfficialRuntime.shutdown().catch(() => undefined);
+      throw error;
     }
-    const wasmInstance = new WebAssembly.Instance(wasmModule);
-    const modules = new Map<string, ModuleFactory>();
-    const decoder = new TextDecoder("utf-8", { fatal: true });
-    for (const record of SUPPORTED_ASSETS.filter(({ kind }) => kind === "javascript")) {
-      for (const [id, factory] of captureWebpackModules(decoder.decode(assets.get(record.filename)!))) {
-        modules.set(id, factory);
-      }
+    if (session.messaging !== undefined) {
+      officialConversationManager = await nextOfficialRuntime.initializeMessagingSession(session);
     }
-    const nextAdapter = createBuild8dd50222Adapter();
-    await nextAdapter.initialize({ session, assets, modules, wasmInstance });
-    adapter = nextAdapter;
+    officialRuntime = nextOfficialRuntime;
     return { buildId: "8dd50222", initializedAt: new Date().toISOString() };
   } catch (error) {
     installedGlobals.restore();
     installedGlobals = undefined;
+
     throw error;
   }
+}
+
+async function exportRuntimeState(): Promise<CryptoStateExport> {
+  if (officialRuntime === undefined || installedGlobals === undefined) {
+    throw new AppError("CRYPTO_RUNTIME_FAILED", "Content runtime is not initialized");
+  }
+  const databaseNames = (await installedGlobals.indexedDB.databases())
+    .flatMap(({ name }) => name === undefined ? [] : [name]);
+  const messagingState = officialRuntime.exportMessagingState();
+  return {
+    localStorage: messagingState.localStorage,
+    sessionStorage: messagingState.sessionStorage,
+    ...(messagingState.rootWrappingKey === undefined
+      ? {}
+      : { rootWrappingKey: messagingState.rootWrappingKey }),
+    indexedDb: await exportIndexedDbSnapshot(
+      databaseNames,
+      installedGlobals.indexedDB,
+    ),
+  };
 }
 
 async function dispatch(request: RuntimeRequest): Promise<unknown> {
@@ -89,7 +110,17 @@ async function dispatch(request: RuntimeRequest): Promise<unknown> {
     case "initialize":
       return initialize(request);
     case "encryptChat":
-      return requireAdapter().encryptChat(request.input);
+      if (officialRuntime === undefined || officialConversationManager === undefined) {
+        throw new AppError(
+          "SESSION_REEXPORT_REQUIRED",
+          "Session export is missing login-time messaging key initialization state",
+        );
+      }
+      return captureOfficialChatEnvelope(
+        officialRuntime,
+        officialConversationManager,
+        request.input,
+      );
     case "decryptChat":
       return requireAdapter().decryptChat(request.input);
     case "createPhotoSnap":
@@ -97,11 +128,14 @@ async function dispatch(request: RuntimeRequest): Promise<unknown> {
     case "refreshAuth":
       return requireAdapter().refreshAuth();
     case "exportState":
-      return requireAdapter().exportState();
+      return exportRuntimeState();
     case "shutdown":
+      await officialRuntime?.shutdown();
       installedGlobals?.restore();
       installedGlobals = undefined;
       adapter = undefined;
+      officialRuntime = undefined;
+      officialConversationManager = undefined;
       return undefined;
   }
 }
@@ -113,7 +147,16 @@ function transferList(value: unknown): ArrayBuffer[] {
     "bytes" in value &&
     (value as { bytes?: unknown }).bytes instanceof Uint8Array
   ) {
-    return [(value as { bytes: Uint8Array }).bytes.buffer as ArrayBuffer];
+    const content = value as {
+      bytes: Uint8Array;
+      createContentMessagePayload?: unknown;
+    };
+    return [
+      content.bytes.buffer as ArrayBuffer,
+      ...(content.createContentMessagePayload instanceof Uint8Array
+        ? [content.createContentMessagePayload.buffer as ArrayBuffer]
+        : []),
+    ];
   }
   return [];
 }

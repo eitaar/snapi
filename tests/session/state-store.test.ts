@@ -36,6 +36,19 @@ describe("AtomicJsonStore", () => {
     expect(JSON.parse(await readFile(`${statePath}.previous`, "utf8"))).toEqual({ sequence: 8 });
     await expect(readFile(`${statePath}.next`, "utf8")).rejects.toMatchObject({ code: "ENOENT" });
   });
+  it("persists Uint8Array state as Base64 and restores the byte type", async () => {
+    const dir = await mkdtemp(join(tmpdir(), "snap-state-bytes-"));
+    const statePath = join(dir, "state.json");
+    const store = new AtomicJsonStore<{ readonly payload: Uint8Array }>(statePath);
+
+    await store.write({ payload: new Uint8Array([0, 1, 255]) });
+
+    await expect(store.read()).resolves.toEqual({ payload: new Uint8Array([0, 1, 255]) });
+    expect(JSON.parse(await readFile(statePath, "utf8"))).toEqual({
+      payload: { $bytes: "AAH/" },
+    });
+  });
+
 
   it("restores the original when the final rename fails", async () => {
     const dir = await mkdtemp(join(tmpdir(), "snap-state-fail-"));

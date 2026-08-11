@@ -1,8 +1,8 @@
 import { AppError } from "../errors.js";
 import type { AssetRecord, SessionExport } from "../session/types.js";
 import type { AssetLoaderLike } from "./asset-loader.js";
-import { captureWebpackModules, findUniqueModule } from "./module-scanner.js";
-import type { CompatibilityReport, ModuleFactory } from "./types.js";
+import { inspectOfficialWorkerContract } from "./official-worker-contract.js";
+import type { CompatibilityReport } from "./types.js";
 
 export const SUPPORTED_ASSETS: readonly AssetRecord[] = [
   {
@@ -16,6 +16,12 @@ export const SUPPORTED_ASSETS: readonly AssetRecord[] = [
     filename: "4577c38d10436a1f90f1.chunk.js",
     sha256: "e96e503d349d315c99b396bab35af25fbf6714c35fc73707df0c02accca10a13",
     size: 66_137,
+  },
+  {
+    kind: "javascript",
+    filename: "269b973c69f9ca2dcc93.chunk.js",
+    sha256: "8bcca75a45b14bc18af218f69f273109a944adb5c31b902370ac67b3e265c81f",
+    size: 1_550_593,
   },
   {
     kind: "wasm",
@@ -37,27 +43,14 @@ export interface CompatibilityProbe {
 
 class DefaultCompatibilityProbe implements CompatibilityProbe {
   async inspect(assets: ReadonlyMap<string, Uint8Array>): Promise<CompatibilityInspection> {
-    const modules = new Map<string, ModuleFactory>();
+    const sources = new Map<string, string>();
     const decoder = new TextDecoder("utf-8", { fatal: true });
     for (const record of SUPPORTED_ASSETS.filter(({ kind }) => kind === "javascript")) {
       const bytes = assets.get(record.filename);
       if (bytes === undefined) throw new AppError("UNSUPPORTED_BUILD", "Verified JavaScript asset missing");
-      for (const [id, factory] of captureWebpackModules(decoder.decode(bytes))) {
-        const existing = modules.get(id);
-        if (
-          existing !== undefined &&
-          Function.prototype.toString.call(existing) !== Function.prototype.toString.call(factory)
-        ) {
-          throw new AppError("UNSUPPORTED_BUILD", "Conflicting Webpack module IDs", { moduleId: id });
-        }
-        modules.set(id, factory);
-      }
+      sources.set(record.filename, decoder.decode(bytes));
     }
-    const contentModule = findUniqueModule(modules, [
-      "ContentEnvelope",
-      "EnvelopeEncryption",
-      "FideliusEncryption",
-    ]);
+    const modules = inspectOfficialWorkerContract(sources);
     const wasmRecord = SUPPORTED_ASSETS.find(({ kind }) => kind === "wasm")!;
     const wasmBytes = assets.get(wasmRecord.filename);
     if (wasmBytes === undefined) throw new AppError("UNSUPPORTED_BUILD", "Verified WASM asset missing");
@@ -71,7 +64,7 @@ class DefaultCompatibilityProbe implements CompatibilityProbe {
     const wasmExports = WebAssembly.Module.exports(wasmModule).map(({ name }) => name);
     if (wasmExports.length === 0) throw new AppError("UNSUPPORTED_BUILD", "WASM exports are empty");
     return {
-      modules: [{ capability: "content-envelope", moduleId: contentModule.id }],
+      modules,
       wasmImports,
       wasmExports,
     };

@@ -12,6 +12,8 @@ function validSession(): unknown {
       httpToken: "http-token",
       gatewayToken: "gateway-token",
       cookieHeader: "sc-a=secret",
+      ssoCookieHeader: "account-session=secret",
+      ssoScuid: "sso-client-id",
       requestHeaders: { "x-snap-client-user-agent": "web" },
     },
     assets: [
@@ -29,6 +31,17 @@ function validSession(): unknown {
       },
     ],
     localStorage: { device: "value" },
+    sessionStorage: {},
+    messaging: {
+      keyInitializationInfo: "AQID",
+      rootWrappingKey: {
+        data: "BAUG",
+        identityKeyId: "BwgJ",
+      },
+      friendDevices: {
+        "11111111-1111-4111-8111-111111111111": [{ deviceId: "device-1" }],
+      },
+    },
     indexedDb: {
       databases: [
         {
@@ -64,12 +77,76 @@ describe("parseSessionExport", () => {
     const parsed = parseSessionExport(validSession());
     expect(parsed.accountId).toBe("account-1");
     expect(parsed.assets).toHaveLength(2);
+    expect(parsed).toMatchObject({
+      auth: { ssoCookieHeader: "account-session=secret", ssoScuid: "sso-client-id" },
+      messaging: { keyInitializationInfo: "AQID" },
+    });
+  });
+
+  it("accepts login bootstrap state before the root wrapping key exists", () => {
+    const value = validSession() as {
+      sessionStorage: Record<string, string>;
+      messaging: { rootWrappingKey?: unknown };
+    };
+    delete value.messaging.rootWrappingKey;
+    value.sessionStorage.e2eeTempKey = "opaque serialized temporary identity";
+    expect(parseSessionExport(value)).toMatchObject({
+      sessionStorage: { e2eeTempKey: "opaque serialized temporary identity" },
+      messaging: { keyInitializationInfo: "AQID" },
+    });
+  });
+
+  it("rejects login initialization info without its temporary identity key", () => {
+    const value = validSession() as { messaging: { rootWrappingKey?: unknown } };
+    delete value.messaging.rootWrappingKey;
+    expectInvalid(value);
+  });
+
+  it("rejects malformed messaging key material", () => {
+    const value = validSession() as { messaging: { keyInitializationInfo: string } };
+    value.messaging.keyInitializationInfo = "not base64!";
+    expectInvalid(value);
   });
 
   it("rejects a missing gateway token", () => {
     const value = validSession() as { auth: { gatewayToken?: string } };
     delete value.auth.gatewayToken;
     expectInvalid(value);
+  });
+
+  it("rejects messaging state without bootstrap or resumed key material", () => {
+    const value = validSession() as { messaging: { keyInitializationInfo?: string; rootWrappingKey?: unknown } };
+    delete value.messaging.keyInitializationInfo;
+    delete value.messaging.rootWrappingKey;
+    expectInvalid(value);
+  });
+
+  it("rejects an invalid friend UUID", () => {
+    const value = validSession() as { messaging: { friendDevices: Record<string, unknown> } };
+    value.messaging.friendDevices = { "not-a-uuid": [] };
+    expectInvalid(value);
+  });
+
+  it("rejects non-object friend device records", () => {
+    const value = validSession() as { messaging: { friendDevices: Record<string, unknown> } };
+    value.messaging.friendDevices = {
+      "11111111-1111-4111-8111-111111111111": ["not-an-object"],
+    };
+    expectInvalid(value);
+  });
+
+  it("rejects invalid IndexedDB key paths and flags", () => {
+    const value = validSession() as {
+      indexedDb: { databases: Array<{ stores: Array<Record<string, unknown>> }> };
+    };
+    value.indexedDb.databases[0]!.stores[0]!.keyPath = [];
+    expectInvalid(value);
+  });
+
+  it("defaults absent sessionStorage to an empty snapshot", () => {
+    const value = validSession() as { sessionStorage?: unknown };
+    delete value.sessionStorage;
+    expect(parseSessionExport(value).sessionStorage).toEqual({});
   });
 
   it("rejects any other build", () => {

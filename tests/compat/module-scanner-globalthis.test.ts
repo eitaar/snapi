@@ -13,4 +13,21 @@ describe("Webpack globalThis module registration", () => {
 
     expect([...modules.keys()]).toEqual(["real-shape"]);
   });
+
+  it("keeps VM intrinsics available to captured module factories", () => {
+    const modules = captureWebpackModules(`
+      (globalThis.webpackChunk_snapchat_web_calling_app =
+        globalThis.webpackChunk_snapchat_web_calling_app || []).push([
+          [42],
+          { "uses-intrinsics": function(module) {
+            module.exports = { object: Object.create(null), array: new Array(2) };
+          } }
+        ]);
+    `);
+    const module = { exports: {} as unknown };
+
+    expect(() => modules.get("uses-intrinsics")!(module, module.exports, () => undefined))
+      .not.toThrow();
+    expect((module.exports as { array: unknown[] }).array).toHaveLength(2);
+  });
 });

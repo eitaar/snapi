@@ -6,6 +6,7 @@ import type {
   IndexedDbRecordSnapshot,
   IndexedDbSnapshot,
   IndexedDbStoreSnapshot,
+  MessagingStateExport,
   SessionExport,
 } from "./types.js";
 
@@ -52,6 +53,14 @@ function stringRecordAt(value: unknown, path: string): Readonly<Record<string, s
   return Object.fromEntries(
     Object.entries(record).map(([key, entry]) => [key, stringAt(entry, `${path}.${key}`)]),
   );
+}
+
+function base64At(value: unknown, path: string): string {
+  const encoded = stringAt(value, path);
+  if (!/^(?:[A-Za-z0-9+/]{4})*(?:[A-Za-z0-9+/]{2}==|[A-Za-z0-9+/]{3}=)?$/.test(encoded)) {
+    return invalid(path, "expected canonical Base64");
+  }
+  return encoded;
 }
 
 function keyPathAt(value: unknown, path: string, nullable: boolean): string | readonly string[] | null {
@@ -136,6 +145,50 @@ function parseIndexedDb(value: unknown): IndexedDbSnapshot {
   };
 }
 
+function parseMessagingState(
+  value: unknown,
+  sessionStorage: Readonly<Record<string, string>>,
+): MessagingStateExport {
+  const messaging = objectAt(value, "messaging");
+  const friendDevices = objectAt(messaging.friendDevices, "messaging.friendDevices");
+  const keyInitializationInfo = messaging.keyInitializationInfo === undefined
+    ? undefined
+    : base64At(
+      messaging.keyInitializationInfo,
+      "messaging.keyInitializationInfo",
+    );
+  const rootWrappingKey = messaging.rootWrappingKey === undefined
+    ? undefined
+    : objectAt(messaging.rootWrappingKey, "messaging.rootWrappingKey");
+  if (keyInitializationInfo === undefined && rootWrappingKey === undefined) {
+    invalid("messaging", "expected key initialization info or a persisted root wrapping key");
+  }
+  if (rootWrappingKey === undefined && sessionStorage.e2eeTempKey === undefined) {
+    invalid(
+      "sessionStorage.e2eeTempKey",
+      "required with key initialization info before the first messaging session",
+    );
+  }
+  return {
+    ...(keyInitializationInfo === undefined ? {} : { keyInitializationInfo }),
+    ...(rootWrappingKey === undefined ? {} : { rootWrappingKey: {
+      data: base64At(rootWrappingKey.data, "messaging.rootWrappingKey.data"),
+      identityKeyId: base64At(
+        rootWrappingKey.identityKeyId,
+        "messaging.rootWrappingKey.identityKeyId",
+      ),
+    } }),
+    friendDevices: Object.fromEntries(Object.entries(friendDevices).map(([userId, devices]) => {
+      if (!/^[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i.test(userId)) {
+        return invalid(`messaging.friendDevices.${userId}`, "expected UUID key");
+      }
+      return [userId, arrayAt(devices, `messaging.friendDevices.${userId}`).map((device, index) =>
+        objectAt(device, `messaging.friendDevices.${userId}[${index}]`)
+      )] as const;
+    })),
+  };
+}
+
 export function parseSessionExport(value: unknown): SessionExport {
   const session = objectAt(value, "$");
   if (session.formatVersion !== 1) invalid("formatVersion", "expected version 1");
@@ -148,7 +201,7 @@ export function parseSessionExport(value: unknown): SessionExport {
     invalid("exportedAt", "expected an ISO-8601 UTC timestamp");
   }
   const auth = objectAt(session.auth, "auth");
-  return {
+  const parsed: SessionExport = {
     formatVersion: 1,
     accountId: stringAt(session.accountId, "accountId"),
     buildId: "8dd50222",
@@ -157,10 +210,22 @@ export function parseSessionExport(value: unknown): SessionExport {
       httpToken: stringAt(auth.httpToken, "auth.httpToken"),
       gatewayToken: stringAt(auth.gatewayToken, "auth.gatewayToken"),
       cookieHeader: stringAt(auth.cookieHeader, "auth.cookieHeader"),
+      ...(auth.ssoCookieHeader === undefined
+        ? {}
+        : { ssoCookieHeader: stringAt(auth.ssoCookieHeader, "auth.ssoCookieHeader") }),
+      ...(auth.ssoScuid === undefined
+        ? {}
+        : { ssoScuid: stringAt(auth.ssoScuid, "auth.ssoScuid") }),
       requestHeaders: stringRecordAt(auth.requestHeaders, "auth.requestHeaders"),
     },
     assets: arrayAt(session.assets, "assets").map(parseAsset),
     localStorage: stringRecordAt(session.localStorage, "localStorage"),
+    sessionStorage: session.sessionStorage === undefined
+      ? {}
+      : stringRecordAt(session.sessionStorage, "sessionStorage"),
     indexedDb: parseIndexedDb(session.indexedDb),
   };
+  return session.messaging === undefined
+    ? parsed
+    : { ...parsed, messaging: parseMessagingState(session.messaging, parsed.sessionStorage ?? {}) };
 }

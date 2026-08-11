@@ -23,11 +23,24 @@ describe("loadSession", () => {
         },
         assets: [],
         localStorage: {},
-        indexedDb: { databases: [] },
+        indexedDb: { databases: [{
+          name: "keys",
+          version: 1,
+          stores: [{
+            name: "identity",
+            keyPath: null,
+            autoIncrement: false,
+            indexes: [],
+            records: [{ key: "current", value: { bytes: { $bytes: "AQID" } } }],
+          }],
+        }] },
       }),
       "utf8",
     );
 
-    await expect(loadSession(file)).resolves.toMatchObject({ accountId: "account-1" });
+    const session = await loadSession(file);
+    expect(session.accountId).toBe("account-1");
+    const value = session.indexedDb.databases[0]!.stores[0]!.records[0]!.value;
+    expect(value).toEqual({ bytes: new Uint8Array([1, 2, 3]) });
   });
 });

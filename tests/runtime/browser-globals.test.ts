@@ -26,6 +26,17 @@ describe("installBrowserGlobals", () => {
     expect((target.btoa as (value: string) => string)("a")).toBe("YQ==");
     expect((target.localStorage as Storage).getItem("device")).toBe("stored");
     expect((target.navigator as { userAgent: string }).userAgent).toBe("Snap Runtime Test");
+    const storage = target.localStorage as Storage;
+    expect(storage.length).toBe(1);
+    expect(storage.key(0)).toBe("device");
+    expect(storage.key(99)).toBeNull();
+    storage.setItem("next", "value");
+    expect(storage.getItem("next")).toBe("value");
+    storage.removeItem("device");
+    expect(storage.getItem("device")).toBeNull();
+    storage.clear();
+    expect(storage.length).toBe(0);
+
     expect((target.location as { origin: string }).origin).toBe("https://www.snapchat.com");
     expect(target.indexedDB).toBe(installed.indexedDB);
     expect(target.IDBKeyRange).toBeDefined();

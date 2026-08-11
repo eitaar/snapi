@@ -39,20 +39,53 @@ export function captureWebpackModules(
       return modules.size;
     },
   });
-  const backing: Record<PropertyKey, unknown> = Object.create(null) as Record<PropertyKey, unknown>;
-  const globals = new Proxy(backing, {
-    get(target, property, receiver) {
-      if (typeof property === "string" && property.startsWith("webpackChunk")) return registry;
-      return Reflect.get(target, property, receiver);
-    },
-    set(target, property, value, receiver) {
-      if (typeof property === "string" && property.startsWith("webpackChunk")) return true;
-      return Reflect.set(target, property, value, receiver);
-    },
-  });
-  backing.self = globals;
-  backing.window = globals;
-  backing.globalThis = globals;
+  const globals: Record<string, unknown> = {};
+  const chunkGlobals = new Set(
+    [...source.matchAll(/\bwebpackChunk[A-Za-z0-9_$]+\b/g)].map(([name]) => name),
+  );
+  if (chunkGlobals.size === 0) {
+    throw unsupported("bundle does not declare a webpack chunk registry");
+  }
+  for (const name of chunkGlobals) globals[name] = registry;
+  globals.self = globals;
+  globals.window = globals;
+  globals.crypto = globalThis.crypto;
+  globals.TextDecoder = TextDecoder;
+  globals.TextEncoder = TextEncoder;
+  globals.URL = URL;
+  globals.URLSearchParams = URLSearchParams;
+  globals.Blob = Blob;
+  globals.atob = atob;
+  globals.btoa = btoa;
+  globals.performance = performance;
+  globals.addEventListener = () => undefined;
+  globals.removeEventListener = () => undefined;
+  globals.dispatchEvent = () => true;
+  globals.Event = Event;
+  globals.CustomEvent = CustomEvent;
+  globals.navigator = { userAgent: "Mozilla/5.0", onLine: true };
+  globals.location = {
+    origin: "https://web.snapchat.com",
+    href: "https://web.snapchat.com/web/",
+    pathname: "/web/",
+  };
+  globals.document = {
+    addEventListener: () => undefined,
+    removeEventListener: () => undefined,
+    createElement: () => ({
+      style: {},
+      setAttribute: () => undefined,
+      appendChild: () => undefined,
+      remove: () => undefined,
+    }),
+  };
+  globals.console = {
+    debug: () => undefined,
+    error: () => undefined,
+    info: () => undefined,
+    log: () => undefined,
+    warn: () => undefined,
+  };
 
   try {
     runInNewContext(source, globals, {

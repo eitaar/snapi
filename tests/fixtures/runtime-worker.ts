@@ -1,4 +1,4 @@
-import { parentPort as nullableParentPort } from "node:worker_threads";
+import { parentPort as nullableParentPort, workerData } from "node:worker_threads";
 
 const parentPort = nullableParentPort;
 if (parentPort === null) throw new Error("runtime fixture requires a parent port");
@@ -11,7 +11,10 @@ parentPort.on("message", (request: Record<string, unknown>) => {
       parentPort.postMessage({ unexpected: true });
       return;
     }
-    parentPort.postMessage({ id, ok: true, value: { buildId: "8dd50222", initializedAt: "2026-08-10T00:00:00.000Z" } });
+    const initializedAt = session.accountId === "network-option"
+      ? String((workerData as { allowNetwork?: boolean }).allowNetwork === true)
+      : "2026-08-10T00:00:00.000Z";
+    parentPort.postMessage({ id, ok: true, value: { buildId: "8dd50222", initializedAt } });
     return;
   }
   if (request.method === "encryptChat") {

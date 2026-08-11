@@ -1,5 +1,6 @@
 import { readFile } from "node:fs/promises";
 import { AppError } from "../errors.js";
+import { parseJsonWithBytes } from "./binary-json.js";
 import { parseSessionExport } from "./schema.js";
 import type { SessionExport } from "./types.js";
 
@@ -13,7 +14,7 @@ export async function loadSession(path: string): Promise<SessionExport> {
 
   let value: unknown;
   try {
-    value = JSON.parse(text) as unknown;
+    value = parseJsonWithBytes(text);
   } catch {
     throw new AppError("INVALID_SESSION_EXPORT", "Session export is not valid JSON", { path });
   }

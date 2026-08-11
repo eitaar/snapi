@@ -36,3 +36,36 @@ describe("loadConfig", () => {
     ).toThrowError(AppError);
   });
 });
+
+  it("defaults to human output", () => {
+    expect(loadConfig({
+      SNAP_SESSION_FILE: "session.json",
+      SNAP_ASSET_DIR: "assets",
+      SNAP_ACCOUNT_ID: "account-1",
+      SNAP_BUILD_ID: "8dd50222",
+    }).output).toBe("human");
+  });
+
+  it("rejects an invalid output mode", () => {
+    expect(() => loadConfig({
+      SNAP_SESSION_FILE: "session.json",
+      SNAP_ASSET_DIR: "assets",
+      SNAP_ACCOUNT_ID: "account-1",
+      SNAP_BUILD_ID: "8dd50222",
+      SNAP_OUTPUT: "xml",
+    })).toThrowError(AppError);
+  });
+
+  it("rejects each missing required setting", () => {
+    const complete = {
+      SNAP_SESSION_FILE: "session.json",
+      SNAP_ASSET_DIR: "assets",
+      SNAP_ACCOUNT_ID: "account-1",
+      SNAP_BUILD_ID: "8dd50222",
+    };
+    for (const name of Object.keys(complete)) {
+      const env = { ...complete } as Record<string, string | undefined>;
+      delete env[name];
+      expect(() => loadConfig(env)).toThrowError(AppError);
+    }
+  });

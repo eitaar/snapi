@@ -15,6 +15,7 @@ export interface ChatInput {
 export interface EncryptedContent {
   readonly bytes: Uint8Array;
   readonly contentType: "chat" | "photo-snap";
+  readonly createContentMessagePayload?: Uint8Array;
 }
 
 export interface ChatMessage {
@@ -35,9 +36,16 @@ export interface PhotoSnapInput {
   readonly contentReference: Uint8Array;
 }
 
+export interface ExportedRootWrappingKey {
+  readonly data: string;
+  readonly identityKeyId: string;
+}
+
 export interface CryptoStateExport {
   readonly localStorage: Readonly<Record<string, string>>;
   readonly indexedDb: IndexedDbSnapshot;
+  readonly sessionStorage: Readonly<Record<string, string>>;
+  readonly rootWrappingKey?: ExportedRootWrappingKey;
 }
 
 export interface AuthRefreshResult {

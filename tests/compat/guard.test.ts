@@ -50,6 +50,6 @@ describe("CompatibilityGuard", () => {
       wasmImports: ["env.memory"],
       wasmExports: ["run"],
     });
-    expect(loadVerified).toHaveBeenCalledTimes(3);
+    expect(loadVerified).toHaveBeenCalledTimes(4);
   });
 });

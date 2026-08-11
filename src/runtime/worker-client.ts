@@ -16,6 +16,7 @@ export interface ContentRuntimeClientOptions {
   readonly workerUrl?: URL;
   readonly timeoutMs?: number;
   readonly assetDir?: string;
+  readonly allowNetwork?: boolean;
 }
 
 interface PendingRequest {
@@ -48,7 +49,7 @@ export class ContentRuntimeClient {
   constructor(options: ContentRuntimeClientOptions = {}) {
     this.timeoutMs = options.timeoutMs ?? 10_000;
     this.worker = new Worker(options.workerUrl ?? new URL("./worker-entry.js", import.meta.url), {
-      workerData: { assetDir: options.assetDir },
+      workerData: { assetDir: options.assetDir, allowNetwork: options.allowNetwork === true },
     });
     this.worker.on("message", (value: unknown) => this.handleMessage(value));
     this.worker.once("error", (error) => {

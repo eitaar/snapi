@@ -1,5 +1,6 @@
 import { open, mkdir, readFile, rename, rm } from "node:fs/promises";
 import { dirname } from "node:path";
+import { parseJsonWithBytes, stringifyJsonWithBytes } from "./binary-json.js";
 
 export interface FsOps {
   readonly readText: (path: string) => Promise<string>;
@@ -41,16 +42,16 @@ export class AtomicJsonStore<T> {
   ) {}
 
   async read(): Promise<T> {
-    return this.parse(JSON.parse(await this.fs.readText(this.path)) as unknown);
+    return this.parse(parseJsonWithBytes(await this.fs.readText(this.path)));
   }
 
   async write(value: T): Promise<void> {
     const nextPath = `${this.path}.next`;
     const previousPath = `${this.path}.previous`;
     await this.fs.ensureDirectory(dirname(this.path));
-    await this.fs.writeSynced(nextPath, `${JSON.stringify(value, null, 2)}\n`);
+    await this.fs.writeSynced(nextPath, `${stringifyJsonWithBytes(value, 2)}\n`);
 
-    this.parse(JSON.parse(await this.fs.readText(nextPath)) as unknown);
+    this.parse(parseJsonWithBytes(await this.fs.readText(nextPath)));
     let movedCurrent = false;
     try {
       await this.fs.remove(previousPath);

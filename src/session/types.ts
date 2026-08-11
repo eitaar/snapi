@@ -35,6 +35,17 @@ export interface IndexedDbDatabaseSnapshot {
   readonly stores: readonly IndexedDbStoreSnapshot[];
 }
 
+export interface MessagingStateExport {
+  readonly keyInitializationInfo?: string;
+  readonly rootWrappingKey?: {
+    readonly data: string;
+    readonly identityKeyId: string;
+  };
+  readonly friendDevices: Readonly<
+    Record<string, readonly Readonly<Record<string, unknown>>[]>
+  >;
+}
+
 export interface SessionExport {
   readonly formatVersion: 1;
   readonly accountId: string;
@@ -44,9 +55,13 @@ export interface SessionExport {
     readonly httpToken: string;
     readonly gatewayToken: string;
     readonly cookieHeader: string;
+    readonly ssoCookieHeader?: string;
+    readonly ssoScuid?: string;
     readonly requestHeaders: Readonly<Record<string, string>>;
   };
   readonly assets: readonly AssetRecord[];
   readonly localStorage: Readonly<Record<string, string>>;
+  readonly sessionStorage?: Readonly<Record<string, string>>;
+  readonly messaging?: MessagingStateExport;
   readonly indexedDb: IndexedDbSnapshot;
 }

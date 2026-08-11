@@ -1,3 +1,4 @@
+import { randomUUID } from "node:crypto";
 import { mkdir, writeFile } from "node:fs/promises";
 import { dirname, resolve } from "node:path";
 import { AssetLoader } from "../../compat/asset-loader.js";
@@ -5,6 +6,8 @@ import { CompatibilityGuard, SUPPORTED_ASSETS } from "../../compat/guard.js";
 import { loadConfig, loadEnvironmentFile, type AppConfig } from "../../config.js";
 import { AppError } from "../../errors.js";
 import { loadSession } from "../../session/loader.js";
+import { parseSessionExport } from "../../session/schema.js";
+import { AtomicJsonStore } from "../../session/state-store.js";
 import type { SessionExport } from "../../session/types.js";
 import type { CliIo } from "../io.js";
 import type { EncryptedContent } from "../../runtime/content-types.js";
@@ -16,11 +19,15 @@ import {
   type FeasibilityReport,
 } from "../../runtime/feasibility.js";
 import { ContentRuntimeClient } from "../../runtime/worker-client.js";
+import { refreshSnapchatSso } from "../../transport/sso-auth-refresh.js";
 
 const REPORT_PATH = resolve("docs", "runtime-feasibility-report.md");
 
-function requiredLiveValue(name: "SNAP_TEST_RECIPIENT_ID" | "SNAP_TEST_CONVERSATION_ID"): string {
-  const value = process.env[name];
+function requiredLiveValue(
+  name: "SNAP_TEST_RECIPIENT_ID" | "SNAP_TEST_CONVERSATION_ID",
+  env: NodeJS.ProcessEnv,
+): string {
+  const value = env[name];
   if (value === undefined || value.trim() === "") {
     throw new AppError("INVALID_CONFIG", `Missing live-test configuration: ${name}`, { name });
   }
@@ -58,25 +65,58 @@ async function invalidConfigurationReport(error: unknown): Promise<FeasibilityRe
   });
 }
 
-interface LiveContext {
+interface DoctorRuntime {
+  readonly initialize: (session: SessionExport) => Promise<unknown>;
+  readonly encryptChat: (input: {
+    recipientId: string;
+    conversationId: string;
+    clientMessageId: string;
+    text: string;
+  }) => Promise<EncryptedContent>;
+  readonly exportState: () => Promise<unknown>;
+  readonly shutdown: () => Promise<void>;
+}
+
+export interface LiveContext {
   readonly config: AppConfig;
-  readonly session: SessionExport;
+  session: SessionExport;
   reportAssets: FeasibilityReport["verifiedAssets"];
-  runtime?: ContentRuntimeClient;
+  runtime?: DoctorRuntime;
   encrypted?: EncryptedContent;
 }
 
-async function runLiveCheck(context: LiveContext, name: FeasibilityCheckName): Promise<void> {
+export interface LiveCheckDependencies {
+  readonly verifyAssets?: (
+    config: AppConfig,
+    session: SessionExport,
+  ) => Promise<FeasibilityReport["verifiedAssets"]>;
+  readonly createRuntime?: (assetDir: string) => DoctorRuntime;
+  readonly refreshSession?: (session: SessionExport) => Promise<SessionExport>;
+  readonly env?: NodeJS.ProcessEnv;
+  readonly randomUuid?: () => string;
+  readonly now?: () => number;
+}
+
+export async function runLiveCheck(
+  context: LiveContext,
+  name: FeasibilityCheckName,
+  dependencies: LiveCheckDependencies = {},
+): Promise<void> {
   switch (name) {
     case "assets_verified": {
-      const report = await new CompatibilityGuard(new AssetLoader(context.config.assetDir)).verify(context.session);
-      context.reportAssets = report.assets;
+      context.reportAssets = dependencies.verifyAssets === undefined
+        ? (await new CompatibilityGuard(new AssetLoader(context.config.assetDir)).verify(context.session)).assets
+        : await dependencies.verifyAssets(context.config, context.session);
       return;
     }
     case "worker_started":
-      context.runtime = new ContentRuntimeClient({ assetDir: context.config.assetDir });
+      context.runtime = dependencies.createRuntime?.(context.config.assetDir) ??
+        new ContentRuntimeClient({ assetDir: context.config.assetDir, allowNetwork: true });
       return;
     case "globals_installed":
+      if (dependencies.refreshSession !== undefined) {
+        context.session = await dependencies.refreshSession(context.session);
+      }
       await context.runtime!.initialize(context.session);
       return;
     case "storage_imported":
@@ -85,10 +125,10 @@ async function runLiveCheck(context: LiveContext, name: FeasibilityCheckName): P
       return;
     case "content_envelope_created":
       context.encrypted = await context.runtime!.encryptChat({
-        recipientId: requiredLiveValue("SNAP_TEST_RECIPIENT_ID"),
-        conversationId: requiredLiveValue("SNAP_TEST_CONVERSATION_ID"),
-        clientMessageId: crypto.randomUUID(),
-        text: `snap-runtime-gate-${Date.now()}`,
+        recipientId: requiredLiveValue("SNAP_TEST_RECIPIENT_ID", dependencies.env ?? process.env),
+        conversationId: requiredLiveValue("SNAP_TEST_CONVERSATION_ID", dependencies.env ?? process.env),
+        clientMessageId: (dependencies.randomUuid ?? randomUUID)(),
+        text: `snap-runtime-gate-${(dependencies.now ?? Date.now)()}`,
       });
       return;
     case "state_exported":
@@ -104,33 +144,67 @@ async function runLiveCheck(context: LiveContext, name: FeasibilityCheckName): P
   }
 }
 
-export async function runRuntimeDoctor(io: CliIo): Promise<number> {
-  let context: LiveContext | undefined;
-  let output: "human" | "json" = "human";
+export interface PreparedRuntimeDoctor {
+  readonly output: "human" | "json";
+  readonly verifiedAssets: FeasibilityReport["verifiedAssets"];
+  readonly runCheck: (name: FeasibilityCheckName) => Promise<void>;
+  readonly shutdown: () => Promise<void>;
+}
+
+export interface RuntimeDoctorDependencies {
+  readonly prepare?: () => Promise<PreparedRuntimeDoctor>;
+  readonly writeReport?: (report: FeasibilityReport) => Promise<void>;
+}
+
+async function prepareRuntimeDoctor(): Promise<PreparedRuntimeDoctor> {
+  loadEnvironmentFile();
+  const config = loadConfig();
+  const session = await loadSession(config.sessionFile);
+  if (session.accountId !== config.accountId) {
+    throw new AppError("INVALID_CONFIG", "Configured account does not match the session export");
+  }
+  if (process.env.SNAP_LIVE_TESTS !== "1") {
+    throw new AppError("INVALID_CONFIG", "Set SNAP_LIVE_TESTS=1 to run the managed runtime gate");
+  }
+  const context: LiveContext = { config, session, reportAssets: [] };
+  const sessionStore = new AtomicJsonStore(config.sessionFile, parseSessionExport);
+  const liveDependencies: LiveCheckDependencies = {
+    refreshSession: async (current) => {
+      const refreshed = await refreshSnapchatSso(current);
+      await sessionStore.write(refreshed);
+      return refreshed;
+    },
+  };
+  return {
+    output: config.output,
+    verifiedAssets: SUPPORTED_ASSETS,
+    runCheck: (name) => runLiveCheck(context, name, liveDependencies),
+    shutdown: async () => {
+      await context.runtime?.shutdown().catch(() => undefined);
+    },
+  };
+}
+
+export async function runRuntimeDoctor(
+  io: CliIo,
+  dependencies: RuntimeDoctorDependencies = {},
+): Promise<number> {
+  let prepared: PreparedRuntimeDoctor | undefined;
   let report: FeasibilityReport;
   try {
-    loadEnvironmentFile();
-    const config = loadConfig();
-    output = config.output;
-    const session = await loadSession(config.sessionFile);
-    if (session.accountId !== config.accountId) {
-      throw new AppError("INVALID_CONFIG", "Configured account does not match the session export");
-    }
-    if (process.env.SNAP_LIVE_TESTS !== "1") {
-      throw new AppError("INVALID_CONFIG", "Set SNAP_LIVE_TESTS=1 to run the managed runtime gate");
-    }
-    context = { config, session, reportAssets: [] };
+    prepared = await (dependencies.prepare ?? prepareRuntimeDoctor)();
     report = await runFeasibilityGate({
       buildId: "8dd50222",
-      verifiedAssets: SUPPORTED_ASSETS,
-      runCheck: (name) => runLiveCheck(context!, name),
+      verifiedAssets: prepared.verifiedAssets,
+      runCheck: prepared.runCheck,
     });
   } catch (error) {
     report = await invalidConfigurationReport(error);
   } finally {
-    await context?.runtime?.shutdown().catch(() => undefined);
+    await prepared?.shutdown();
   }
-  await writeReport(report);
+  await (dependencies.writeReport ?? writeReport)(report);
+  const output = prepared?.output ?? "human";
   emit(io, report, output);
   return failureExitCode(report);
 }
