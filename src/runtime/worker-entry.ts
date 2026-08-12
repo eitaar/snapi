@@ -23,6 +23,7 @@ import { GrpcWebClient } from "../transport/grpc-client.js";
 import { beginOfficialCaptureOnly, drainOfficialCapturedRequests } from "./official-host-control.js";
 import { extractCapturedContent, isCapturedCreateContentMessage } from "./official-captured-content.js";
 import { RuntimeRequestAuth } from "./runtime-request-auth.js";
+import { MessagingInitializationState } from "./messaging-initialization-state.js";
 import {
   IncomingSnapQueue,
   MAX_RESOLVED_BYTES_PER_SNAP,
@@ -37,7 +38,7 @@ const data = workerData as {
 } | undefined;
 let adapter: BuildAdapter | undefined;
 let officialRuntime: OfficialWorkerClient | undefined;
-let officialConversationManager: OfficialRemote | undefined;
+const messagingInitialization = new MessagingInitializationState();
 let installedGlobals: InstalledGlobals | undefined;
 let photoBuilder: OfficialPhotoContentBuilder | undefined;
 let photoRequestAuth: RuntimeRequestAuth | undefined;
@@ -125,6 +126,7 @@ async function initialize(request: Extract<RuntimeRequest, { method: "initialize
     throw new AppError("INVALID_CONFIG", "Worker asset directory is required");
   }
   const session = parseSessionExport(request.session);
+  messagingInitialization.reset();
   let initializationStage = "browser-state";
   installedGlobals = installBrowserGlobals({
     origin: "https://www.snapchat.com",
@@ -223,9 +225,10 @@ async function initialize(request: Extract<RuntimeRequest, { method: "initialize
     if (session.messaging !== undefined) {
       try {
         initializationStage = "messaging-session";
-        officialConversationManager = await nextOfficialRuntime.initializeMessagingSession(session);
+        messagingInitialization.setManager(await nextOfficialRuntime.initializeMessagingSession(session));
       } catch (error) {
         if (!canContinueWithoutMessaging(error)) throw error;
+        messagingInitialization.retain(error);
       }
     }
     officialRuntime = nextOfficialRuntime;
@@ -251,12 +254,10 @@ async function initialize(request: Extract<RuntimeRequest, { method: "initialize
 async function createOfficialPhotoSnap(
   input: Extract<RuntimeRequest, { method: "createPhotoSnap" }>["input"],
 ): Promise<unknown> {
-  if (officialRuntime === undefined || officialConversationManager === undefined || photoBuilder === undefined) {
-    throw new AppError(
-      "SESSION_REEXPORT_REQUIRED",
-      "Session export is missing login-time messaging key initialization state",
-    );
+  if (officialRuntime === undefined || photoBuilder === undefined) {
+    throw new AppError("CRYPTO_RUNTIME_FAILED", "Content runtime is not initialized");
   }
+  const officialConversationManager = messagingInitialization.require();
   photoUploadError = undefined;
   const prepared = await photoBuilder.prepare(input);
   await beginOfficialCaptureOnly(officialRuntime);
@@ -327,12 +328,10 @@ async function dispatch(request: RuntimeRequest): Promise<unknown> {
       photoRequestAuth?.update(request.auth);
       return undefined;
     case "encryptChat":
-      if (officialRuntime === undefined || officialConversationManager === undefined) {
-        throw new AppError(
-          "SESSION_REEXPORT_REQUIRED",
-          "Session export is missing login-time messaging key initialization state",
-        );
+      if (officialRuntime === undefined || photoBuilder === undefined) {
+        throw new AppError("CRYPTO_RUNTIME_FAILED", "Content runtime is not initialized");
       }
+      const officialConversationManager = messagingInitialization.require();
       return captureOfficialChatEnvelope(
         officialRuntime,
         officialConversationManager,
@@ -379,7 +378,7 @@ async function dispatch(request: RuntimeRequest): Promise<unknown> {
       installedGlobals = undefined;
       adapter = undefined;
       officialRuntime = undefined;
-      officialConversationManager = undefined;
+      messagingInitialization.reset();
       photoBuilder = undefined;
       photoRequestAuth = undefined;
       photoUploadError = undefined;
