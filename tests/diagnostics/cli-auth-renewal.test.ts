@@ -185,6 +185,37 @@ describe("runCliAuthRenewalProbe", () => {
     expect(fetch).toHaveBeenCalledTimes(2);
     expect(JSON.stringify(report)).not.toContain(refreshedToken);
   });
+
+  it("classifies a verification redirect as browser-context-required without exposing redirect data", async () => {
+    const refreshedToken = "v".repeat(96);
+    const fetch = vi.fn(async (input: string | URL | Request, init?: RequestInit) => {
+      if (String(input).startsWith("https://accounts.snapchat.com/accounts/sso")) {
+        return new Response(refreshedToken, {
+          status: 200,
+          headers: { scuid: session().accountId },
+        });
+      }
+      if (init?.redirect === "error") {
+        throw new TypeError("redirect to /v2/login?code=secret-code");
+      }
+      return new Response(null, {
+        status: 303,
+        headers: { location: "/v2/login?code=secret-code" },
+      });
+    });
+
+    const report = await runCliAuthRenewalProbe(dependencies({ fetch }));
+
+    expect(report).toEqual({
+      mode: "cli-only",
+      result: "browser-context-required",
+      statuses: [303],
+      capabilities: [{ capability: "browser-context-required", status: "rejected", httpStatus: 303 }],
+    });
+    expect(fetch).toHaveBeenCalledTimes(2);
+    expect(JSON.stringify(report)).not.toContain(refreshedToken);
+    expect(JSON.stringify(report)).not.toContain("secret-code");
+  });
 });
 
 describe("debug auth-renewal CLI", () => {

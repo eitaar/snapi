@@ -156,7 +156,7 @@ export async function runReadOnlyAuthProbe(
       method: "POST",
       headers,
       body: requestBody,
-      redirect: "error",
+      redirect: "manual",
     });
     return { ...observationBase, status: response.status };
   } catch (error) {

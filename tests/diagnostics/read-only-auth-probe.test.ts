@@ -33,7 +33,7 @@ describe("runReadOnlyAuthProbe", () => {
       const headers = new Headers(init?.headers);
       expect(headers.get("authorization")).toBe("Bearer token-sentinel");
       expect(headers.has("cookie")).toBe(false);
-      expect(init?.redirect).toBe("error");
+      expect(init?.redirect).toBe("manual");
       return new Response(null, { status: 401 });
     });
 
@@ -50,6 +50,21 @@ describe("runReadOnlyAuthProbe", () => {
     expect(JSON.stringify(observation)).not.toContain("token-sentinel");
     expect(JSON.stringify(observation)).not.toContain("web-cookie");
     expect(fetch).toHaveBeenCalledOnce();
+  });
+
+  it("preserves a redirect status without retaining redirect details", async () => {
+    const fetch = vi.fn(async () => new Response(null, {
+      status: 303,
+      headers: { location: "/v2/login?code=secret-code" },
+    }));
+
+    const observation = await runReadOnlyAuthProbe(fixture("node-bearer"), { fetch });
+
+    expect(observation).toMatchObject({
+      context: "node-bearer",
+      status: 303,
+    });
+    expect(JSON.stringify(observation)).not.toContain("secret-code");
   });
 
   it("adds the exported web cookie only in node-web-cookie mode", async () => {

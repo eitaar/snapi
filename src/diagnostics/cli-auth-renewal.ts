@@ -186,7 +186,10 @@ export async function runCliAuthRenewalProbe(
       ? undefined
       : async (cookieHeader: string) => {
           usage.usedDbsc = true;
-          return refreshBraveDbsc(cookieHeader, { profileDir, fetch: dependencies.fetch });
+          return refreshBraveDbsc(cookieHeader, {
+            profileDir,
+            ...(dependencies.fetch === undefined ? {} : { fetch: dependencies.fetch }),
+          });
         });
   const attestation = dependencies.attestation ??
     (allowLiveLocalDependencies
