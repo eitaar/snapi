@@ -94,4 +94,14 @@ describe("AuthProvider", () => {
     await expect(provider.refreshOnce({ kind: "http", status: 403 })).rejects.toThrow("disk unavailable");
     expect(provider.sessionSnapshot()).toBe(original);
   });
+
+  it("keeps the old session when refresh itself fails", async () => {
+    const original = session();
+    const provider = new AuthProvider(original, {
+      refresh: async () => { throw new Error("refresh denied"); },
+    });
+
+    await expect(provider.refreshOnce({ kind: "http", status: 401 })).rejects.toThrow("refresh denied");
+    expect(provider.sessionSnapshot()).toBe(original);
+  });
 });

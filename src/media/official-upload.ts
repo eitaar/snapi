@@ -48,7 +48,11 @@ export async function uploadOfficialPhotoContent(
     "snapchat.content.v2.MediaDeliveryService",
     "GetUploadLocations",
     encodeGetUploadLocationsRequest(),
-    { timeoutMs: 30_000, retryKind: "idempotent" },
+    {
+      timeoutMs: 30_000,
+      retryKind: "idempotent",
+      replayPolicy: "idempotent",
+    },
   );
   const location = parseUploadLocation(locationResult.data);
   const body = new ArrayBuffer(encrypted.encryptedData.length);

@@ -94,7 +94,11 @@ export class MessagingClient {
         "messagingcoreservice.MessagingCoreService",
         "CreateContentMessage",
         encrypted.createContentMessagePayload,
-        { timeoutMs: 30_000, retryKind: "message-with-client-id" },
+        {
+          timeoutMs: 30_000,
+          retryKind: "message-with-client-id",
+          replayPolicy: "ambiguous-send",
+        },
       );
     } catch (error) {
       if (error instanceof AppError && error.code === "NETWORK_FAILED") {

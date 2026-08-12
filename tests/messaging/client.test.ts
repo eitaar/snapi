@@ -58,7 +58,11 @@ describe("MessagingClient", () => {
       "messagingcoreservice.MessagingCoreService",
       "CreateContentMessage",
       new Uint8Array([1, 2, 3]),
-      { timeoutMs: 30_000, retryKind: "message-with-client-id" },
+      {
+        timeoutMs: 30_000,
+        retryKind: "message-with-client-id",
+        replayPolicy: "ambiguous-send",
+      },
     );
   });
 
@@ -96,7 +100,7 @@ describe("MessagingClient", () => {
 
   it("maps an ambiguous network completion without retrying the logical send", async () => {
     const deps = dependencies([]);
-    deps.grpc.unary.mockRejectedValue(new AppError("NETWORK_FAILED", "socket closed"));
+    deps.grpc.unary.mockRejectedValue(new AppError("NETWORK_FAILED", "socket closed", { status: 401 }));
     const client = new MessagingClient(deps);
 
     await expect(client.sendText(input)).rejects.toMatchObject({

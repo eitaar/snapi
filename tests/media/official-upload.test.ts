@@ -46,7 +46,11 @@ describe("official photo upload", () => {
       "snapchat.content.v2.MediaDeliveryService",
       "GetUploadLocations",
       expect.any(Uint8Array),
-      { timeoutMs: 30_000, retryKind: "idempotent" },
+      {
+        timeoutMs: 30_000,
+        retryKind: "idempotent",
+        replayPolicy: "idempotent",
+      },
     );
     expect(fetch).toHaveBeenCalledOnce();
     expect(builder.finalizeUpload).toHaveBeenCalledWith(

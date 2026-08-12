@@ -9,11 +9,14 @@ const ALLOWED_REQUEST_HEADERS = new Set([
   "x-user-agent",
 ]);
 
+export type RequestReplayPolicy = "read-only" | "idempotent" | "ambiguous-send";
+
 export interface UnaryCallOptions {
   readonly signal?: AbortSignal;
   readonly headers?: Readonly<Record<string, string>>;
   readonly timeoutMs: number;
   readonly retryKind: "none" | "idempotent" | "message-with-client-id";
+  readonly replayPolicy?: RequestReplayPolicy;
 }
 
 export interface UnaryResult {
@@ -58,6 +61,18 @@ function refreshReason(httpStatus: number, grpcStatus?: number): AuthRefreshReas
     return { kind: "grpc", status: grpcStatus };
   }
   return undefined;
+}
+
+function requestReplayPolicy(options: UnaryCallOptions): RequestReplayPolicy | undefined {
+  if (options.replayPolicy !== undefined) return options.replayPolicy;
+  if (options.retryKind === "idempotent") return "idempotent";
+  if (options.retryKind === "message-with-client-id") return "ambiguous-send";
+  return undefined;
+}
+
+function canReplayAfterHttpAuthFailure(options: UnaryCallOptions): boolean {
+  const policy = requestReplayPolicy(options);
+  return policy === "read-only" || policy === "idempotent";
 }
 
 export class GrpcWebClient {
@@ -111,7 +126,7 @@ export class GrpcWebClient {
       }
 
       const httpRefresh = refreshReason(response.status);
-      if (httpRefresh !== undefined && attempt === 0) {
+      if (httpRefresh !== undefined && attempt === 0 && canReplayAfterHttpAuthFailure(options)) {
         await this.options.auth.refreshOnce(httpRefresh);
         continue;
       }
@@ -147,7 +162,7 @@ export class GrpcWebClient {
       }
       const grpcStatus = Number(grpcStatusText);
       const grpcRefresh = refreshReason(response.status, grpcStatus);
-      if (grpcRefresh !== undefined && attempt === 0) {
+      if (grpcRefresh !== undefined && attempt === 0 && canReplayAfterHttpAuthFailure(options)) {
         await this.options.auth.refreshOnce(grpcRefresh);
         continue;
       }
