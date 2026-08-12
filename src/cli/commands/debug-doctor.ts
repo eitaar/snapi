@@ -20,6 +20,10 @@ import {
 } from "../../runtime/feasibility.js";
 import { ContentRuntimeClient } from "../../runtime/worker-client.js";
 import { refreshSnapchatSso } from "../../transport/sso-auth-refresh.js";
+import {
+  runCliAuthRenewalProbe,
+  type CliAuthRenewalReport,
+} from "../../diagnostics/cli-auth-renewal.js";
 
 const REPORT_PATH = resolve("docs", "runtime-feasibility-report.md");
 
@@ -156,6 +160,11 @@ export interface RuntimeDoctorDependencies {
   readonly writeReport?: (report: FeasibilityReport) => Promise<void>;
 }
 
+export interface DebugAuthRenewalDependencies {
+  readonly env?: NodeJS.ProcessEnv;
+  readonly runProbe?: () => Promise<CliAuthRenewalReport>;
+}
+
 async function prepareRuntimeDoctor(): Promise<PreparedRuntimeDoctor> {
   loadEnvironmentFile();
   const config = loadConfig();
@@ -207,4 +216,20 @@ export async function runRuntimeDoctor(
   const output = prepared?.output ?? "human";
   emit(io, report, output);
   return failureExitCode(report);
+}
+
+export async function runDebugAuthRenewal(
+  io: CliIo,
+  dependencies: DebugAuthRenewalDependencies = {},
+): Promise<number> {
+  const env = dependencies.env ?? (() => {
+    loadEnvironmentFile();
+    return process.env;
+  })();
+  if (env.SNAP_LIVE_TESTS !== "1") {
+    throw new AppError("INVALID_CONFIG", "Set SNAP_LIVE_TESTS=1 to run the CLI-only auth renewal probe");
+  }
+  const report = await (dependencies.runProbe ?? (() => runCliAuthRenewalProbe({ env })))();
+  io.stdout(JSON.stringify({ type: "debug.auth-renewal", ...report }));
+  return 0;
 }

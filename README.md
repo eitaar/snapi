@@ -76,6 +76,24 @@ An expired export fails with `SESSION_REEXPORT_REQUIRED` before message send.
 the two allowlisted MessagingCoreService paths. It emits only sanitized status
 and request metadata; it does not retry or print credentials.
 
+`debug auth-renewal --cli-only` is also opt-in and read-only. It requires
+`SNAP_LIVE_TESTS=1`, attempts at most one CLI-only SSO/DBSC renewal plus one
+read-only verification request, and never persists refreshed session state from
+this diagnostic path. It returns only sanitized result metadata:
+
+- `renewed`: that one diagnostic execution completed a local refresh and the
+  single read-only verification request succeeded.
+- `browser-context-required`: the refresh or verification path reached a
+  browser-bound redirect/forbidden outcome such as HTTP `303` or `403`.
+- `profile-unavailable`: the local Brave/DBSC profile material needed for the
+  CLI-only path was unavailable in the current host context.
+- `rejected`: the local refresh path ran, but the single verification request
+  still did not succeed.
+
+The command does not print or persist raw Cookie, Bearer, token, proof, or
+request/response body material.
+
+
 See [session export format](docs/session-export-format.md),
 [security boundaries](docs/security-boundaries.md), and the
 [build update runbook](docs/build-update-runbook.md).

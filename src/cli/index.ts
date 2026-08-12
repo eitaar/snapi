@@ -15,6 +15,7 @@ export type ConfiguredCliClient = ConfiguredChatSendClient & ConfiguredGatewaySt
 
 export interface CliDependencies {
   readonly runRuntimeDoctor?: (io: CliIo) => Promise<number>;
+  readonly runDebugAuthRenewal?: (io: CliIo) => Promise<number>;
   readonly runSessionCheck?: (io: CliIo) => Promise<number>;
   readonly createClient?: () => Promise<ConfiguredCliClient>;
   readonly readFile?: (path: string) => Promise<Uint8Array>;
@@ -67,6 +68,19 @@ export async function main(
     const runRuntimeDoctor = dependencies.runRuntimeDoctor ??
       (await import("./commands/debug-doctor.js")).runRuntimeDoctor;
     return runRuntimeDoctor(io);
+  }
+  if (argv.length === 3 && argv[0] === "debug" && argv[1] === "auth-renewal" && argv[2] === "--cli-only") {
+    try {
+      if (dependencies.runDebugAuthRenewal !== undefined) {
+        return await dependencies.runDebugAuthRenewal(io);
+      }
+      const runDebugAuthRenewal = (await import("./commands/debug-doctor.js")).runDebugAuthRenewal;
+      return await runDebugAuthRenewal(io, {
+        ...(dependencies.env === undefined ? {} : { env: dependencies.env }),
+      });
+    } catch (error) {
+      return emitError(io, error);
+    }
   }
   if (argv.length >= 2 && argv[0] === "debug" && argv[1] === "auth-gap") {
     try {

@@ -41,3 +41,33 @@ The direct-runtime feasibility gate therefore fails for build `8dd50222`. The ev
 - The stored request was `POST` over HTTPS to `web.snapchat.com`, but its path was `/com.snapchat.deltaforce.external.DeltaForce/DeltaSync`.
 - The probe allowlist intentionally accepts only `/messagingcoreservice.MessagingCoreService/DeltaSync` and `/messagingcoreservice.MessagingCoreService/GetGroups`.
 - No live request was made because the stored path did not match the allowlist; no conclusion about Cookie sufficiency was drawn.
+
+## CLI-only auth renewal diagnostic gate
+
+The separate diagnostic command:
+
+```powershell
+$env:SNAP_LIVE_TESTS='1'
+node dist/cli/index.js debug auth-renewal --cli-only
+```
+
+is opt-in and read-only. It permits at most one CLI-only renewal attempt plus
+one read-only verification request, does not persist refreshed session state,
+and emits only sanitized result/status/capability metadata.
+
+Interpret the result values as follows:
+
+- `renewed`: this diagnostic execution completed one local refresh and the one
+  read-only verification request succeeded. It does not claim that future
+  requests, other operations, or a different authentication epoch will also
+  succeed.
+- `browser-context-required`: the renewal or verification path hit a
+  browser-bound outcome, including the expected `303`/`403` class of responses.
+  For this build/context, the CLI-only path should remain fail-closed.
+- `profile-unavailable`: local Brave/DBSC profile state required for the
+  CLI-only path was not available to the host process.
+- `rejected`: the CLI-only renewal path ran, but the single verification
+  request still failed. This is not evidence that retries, extra probes, or
+  credential replay should be added.
+
+Like the auth-gap probe, this diagnostic gate must not print or persist raw
