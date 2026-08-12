@@ -205,12 +205,13 @@ export async function readBraveCookieHeader(
             "Brave v20 cookies require the Brave browser context for App-Bound decryption",
           );
         }
-        value = prefix === "v10" || prefix === "v11"
-          ? decryptChromiumCookieValue(
-              encryptedValue,
-              (masterKey ??= await readMasterKey(profileDir, unprotect)),
-            )
-          : new TextDecoder().decode(await unprotect(encryptedValue));
+        if (prefix !== "v10" && prefix !== "v11") {
+          throw new AppError("AUTH_CONTEXT_UNAVAILABLE", "Brave cookie uses an unsupported encryption format");
+        }
+        value = decryptChromiumCookieValue(
+          encryptedValue,
+          (masterKey ??= await readMasterKey(profileDir, unprotect)),
+        );
       }
       records.push({ hostKey, name, value, encryptedValue, path });
     }

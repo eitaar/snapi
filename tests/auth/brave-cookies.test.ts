@@ -39,6 +39,12 @@ describe("Brave cookie auth", () => {
     );
   });
 
+  it("fails closed for unknown Chromium cookie formats", () => {
+    expect(() => decryptChromiumCookieValue(Buffer.from("v99unknown"), randomBytes(32))).toThrow(
+      "Brave cookie uses an unsupported encryption format",
+    );
+  });
+
   it("does not attempt v20 decryption from the Brave profile store", async () => {
     const root = await mkdtemp(join(tmpdir(), "snaapi-brave-cookie-v20-"));
     try {
