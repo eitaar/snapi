@@ -1,7 +1,7 @@
 # Content Runtime Feasibility Report
 
 - Build ID: `8dd50222`
-- Started at: `2026-08-11T06:07:32.790Z`
+- Started at: `2026-08-12T02:38:12.020Z`
 
 ## Verified assets
 
@@ -16,31 +16,9 @@
 
 | Check | Status | Duration ms | Error code | Safe error |
 |---|---|---:|---|---|
-| assets_verified | passed | 0 |  |  |
-| worker_started | passed | 0 |  |  |
-| globals_installed | passed | 0 |  |  |
-| storage_imported | passed | 0 |  |  |
-| wasm_instantiated | passed | 0 |  |  |
-| modules_resolved | passed | 0 |  |  |
-| content_envelope_created | failed | 0 | CRYPTO_RUNTIME_FAILED | Direct Node MessagingCoreService transport is not authorized outside the browser connection context |
-
-## Live transport evidence
-
-- Edge extension access verified the logged-in page at `https://www.snapchat.com/web`.
-- A browser-issued 292-character token matched the Bearer token on a successful `DeltaSync` POST.
-- The successful browser `DeltaSync` POST returned HTTP 200.
-- Replaying that exact current POST body, non-secret headers, and token from Node within seconds returned HTTP 401.
-- The official Worker generated `SyncConversations` and `GetGroups`; both returned HTTP 401 from Node.
-- No `CreateContentMessage` request was produced and no live CLI message was sent during this gate.
-
-The direct-runtime feasibility gate therefore fails for build `8dd50222`. The evidence is consistent with browser connection or attestation binding, but does not identify which browser-only signal the server validates. Per the design boundary, the implementation must not silently replace direct execution with browser automation.
-
-## Read-only auth-gap probe safety gate
-
-- The private probe input and session export were present and their file timestamps were within two minutes.
-- The stored request was `POST` over HTTPS to `web.snapchat.com`, but its path was `/com.snapchat.deltaforce.external.DeltaForce/DeltaSync`.
-- The probe allowlist intentionally accepts only `/messagingcoreservice.MessagingCoreService/DeltaSync` and `/messagingcoreservice.MessagingCoreService/GetGroups`.
-- No live request was made because the stored path did not match the allowlist; no conclusion about Cookie sufficiency was drawn.
+| assets_verified | passed | 101 |  |  |
+| worker_started | passed | 4 |  |  |
+| globals_installed | failed | 510 | AUTH_CONTEXT_UNAVAILABLE | SSO refresh requires a browser-managed authentication context |
 
 ## CLI-only auth renewal diagnostic gate
 
@@ -71,3 +49,4 @@ Interpret the result values as follows:
   credential replay should be added.
 
 Like the auth-gap probe, this diagnostic gate must not print or persist raw
+Cookie, Bearer, token, proof, or request/response body material.

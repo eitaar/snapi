@@ -2,6 +2,7 @@ import { AppError } from "../errors.js";
 import { captureWebpackModules } from "../compat/module-scanner.js";
 import { createWebpackRuntime, rebindWebpackFactories, type WebpackRuntime } from "./webpack-runtime.js";
 import { normalizeOfficialChatMessages } from "./official-chat-message.js";
+import { normalizeOfficialIncomingSnapMessages, type OfficialIncomingSnapCandidate } from "./official-incoming-snap.js";
 import type { ChatMessage } from "./content-types.js";
 import type { ChatInput } from "./content-types.js";
 
@@ -240,6 +241,17 @@ export class OfficialPhotoContentBuilder {
       readonly wn: (content: unknown) => unknown;
     };
     return normalizeOfficialChatMessages(
+      messages,
+      (content) => messageHelpers.wn(content),
+      receivedAt,
+    );
+  }
+
+  decodeIncomingSnapMessages(messages: readonly unknown[], receivedAt?: string): OfficialIncomingSnapCandidate[] {
+    const messageHelpers = this.runtime.require("60412") as {
+      readonly wn: (content: unknown) => unknown;
+    };
+    return normalizeOfficialIncomingSnapMessages(
       messages,
       (content) => messageHelpers.wn(content),
       receivedAt,

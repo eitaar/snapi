@@ -4,6 +4,7 @@ import {
   beginOfficialCaptureOnly,
   drainOfficialCapturedRequests,
   drainOfficialObservedRequests,
+  setOfficialWebCookie,
 } from "../../src/runtime/official-host-control.js";
 import { OfficialWorkerClient } from "../../src/runtime/official-worker-client.js";
 import type { SessionExport } from "../../src/session/types.js";
@@ -11,6 +12,14 @@ import type { SessionExport } from "../../src/session/types.js";
 const enabled = process.env.SNAP_BUNDLE_ASSET_TESTS === "1";
 
 describe("official Worker host diagnostics", () => {
+  it("sets the web cookie through host control without returning it", async () => {
+    const apply = vi.fn(async () => true);
+    const client = { apply } as unknown as OfficialWorkerClient;
+
+    await expect(setOfficialWebCookie(client, "cookie-sentinel")).resolves.toBeUndefined();
+    expect(apply).toHaveBeenCalledWith(["__host", "setWebCookieHeader"], ["cookie-sentinel"]);
+  });
+
   it("drains safe request observations through host control", async () => {
     const apply = vi.fn(async () => [{
       path: "https://web.snapchat.com/web-chat-session/refresh",

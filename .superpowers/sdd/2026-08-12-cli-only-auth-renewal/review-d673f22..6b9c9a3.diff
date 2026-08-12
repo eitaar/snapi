@@ -1,0 +1,268 @@
+# Review package: d673f22529507f6bc325dfa72ce7a1781a93d3a4..6b9c9a3
+
+## Commits and diff
+Exit code: 0
+Wall time: 0.7 seconds
+Output:
+6b9c9a3 feat: define safe CLI auth renewal outcomes
+ src/auth/renewal.ts        | 126 +++++++++++++++++++++++++++++++++++++++++++++
+ tests/auth/renewal.test.ts | 119 ++++++++++++++++++++++++++++++++++++++++++
+ 2 files changed, 245 insertions(+)
+diff --git a/src/auth/renewal.ts b/src/auth/renewal.ts
+new file mode 100644
+index 0000000..55d76f4
+--- /dev/null
++++ b/src/auth/renewal.ts
+@@ -0,0 +1,126 @@
++import { AppError, type ErrorCode } from "../errors.js";
++import type { SessionExport } from "../session/types.js";
++
++export type RenewalCapability =
++  | "manual-session"
++  | "legacy-brave-cookie"
++  | "dbsc-profile"
++  | "web-attestation"
++  | "browser-context-required";
++
++export interface RenewalObservation {
++  readonly capability: RenewalCapability;
++  readonly status: "available" | "used" | "rejected" | "unavailable";
++  readonly httpStatus?: number;
++}
++
++export interface RenewalResult {
++  readonly session: SessionExport;
++  readonly observations: readonly RenewalObservation[];
++}
++
++type SafeRenewalDetails = Readonly<{
++  status?: number;
++  locationOrigin?: string;
++  locationPath?: string;
++  locationQueryKeys?: readonly string[];
++  locationHasCode?: boolean;
++  locationHasError?: boolean;
++  locationInvalid?: boolean;
++  hasLocation?: boolean;
++  observations: readonly RenewalObservation[];
++}>;
++
++function numericStatus(details: Readonly<Record<string, unknown>>): number | undefined {
++  const value = details.status;
++  return typeof value === "number" && Number.isFinite(value) ? value : undefined;
++}
++
++function safeRedirectDetails(details: Readonly<Record<string, unknown>>): Omit<SafeRenewalDetails, "observations" | "status"> {
++  const safe: Omit<SafeRenewalDetails, "observations" | "status"> = {};
++  if (typeof details.locationOrigin === "string") safe.locationOrigin = details.locationOrigin;
++  if (typeof details.locationPath === "string") safe.locationPath = details.locationPath;
++  if (Array.isArray(details.locationQueryKeys) && details.locationQueryKeys.every((value) => typeof value === "string")) {
++    safe.locationQueryKeys = details.locationQueryKeys;
++  }
++  if (typeof details.locationHasCode === "boolean") safe.locationHasCode = details.locationHasCode;
++  if (typeof details.locationHasError === "boolean") safe.locationHasError = details.locationHasError;
++  if (typeof details.locationInvalid === "boolean") safe.locationInvalid = details.locationInvalid;
++  if (typeof details.hasLocation === "boolean") safe.hasLocation = details.hasLocation;
++  return safe;
++}
++
++function renewalError(
++  code: ErrorCode,
++  message: string,
++  observations: readonly RenewalObservation[],
++  details: Readonly<Record<string, unknown>> = {},
++): AppError {
++  const status = numericStatus(details);
++  const safeDetails: SafeRenewalDetails = {
++    ...(status === undefined ? {} : { status }),
++    ...safeRedirectDetails(details),
++    observations,
++  };
++  return new AppError(code, message, safeDetails);
++}
++
++export function classifyRenewalFailure(error: unknown): AppError {
++  if (!(error instanceof AppError)) {
++    return renewalError(
++      "SESSION_REEXPORT_REQUIRED",
++      "CLI-only authentication renewal failed",
++      [{ capability: "manual-session", status: "rejected" }],
++    );
++  }
++
++  const status = numericStatus(error.details);
++  if (status === 403 || status === 303 || (status !== undefined && status >= 300 && status < 400)) {
++    return renewalError(
++      "AUTH_CONTEXT_UNAVAILABLE",
++      "CLI-only authentication renewal requires a browser-managed authentication context",
++      [{ capability: "browser-context-required", status: "rejected", httpStatus: status }],
++      error.details,
++    );
++  }
++
++  if (error.code === "AUTH_CONTEXT_UNAVAILABLE" && /dbsc profile directory is unavailable/i.test(error.message)) {
++    return renewalError(
++      "AUTH_CONTEXT_UNAVAILABLE",
++      "CLI-only authentication renewal could not use the local DBSC profile",
++      [{ capability: "dbsc-profile", status: "unavailable" }],
++    );
++  }
++
++  if (error.code === "SESSION_REEXPORT_REQUIRED" && /invalid token/i.test(error.message)) {
++    return renewalError(
++      "SESSION_REEXPORT_REQUIRED",
++      "CLI-only authentication renewal rejected the returned session state",
++      [{ capability: "manual-session", status: "rejected" }],
++    );
++  }
++
++  if (error.code === "AUTH_CONTEXT_UNAVAILABLE") {
++    return renewalError(
++      "AUTH_CONTEXT_UNAVAILABLE",
++      "CLI-only authentication renewal is unavailable in this local context",
++      [{ capability: "manual-session", status: "unavailable" }],
++      error.details,
++    );
++  }
++
++  if (error.code === "SESSION_REEXPORT_REQUIRED") {
++    return renewalError(
++      "SESSION_REEXPORT_REQUIRED",
++      "CLI-only authentication renewal failed",
++      [{ capability: "manual-session", status: "rejected" }],
++      error.details,
++    );
++  }
++
++  return renewalError(
++    "SESSION_REEXPORT_REQUIRED",
++    "CLI-only authentication renewal failed",
++    [{ capability: "manual-session", status: "rejected" }],
++  );
++}
+diff --git a/tests/auth/renewal.test.ts b/tests/auth/renewal.test.ts
+new file mode 100644
+index 0000000..ed9d5b4
+--- /dev/null
++++ b/tests/auth/renewal.test.ts
+@@ -0,0 +1,119 @@
++import { describe, expect, it } from "vitest";
++import { AppError } from "../../src/errors.js";
++import { classifyRenewalFailure } from "../../src/auth/renewal.js";
++
++function expectSafeSerialization(error: AppError, forbidden: readonly string[]): void {
++  const serialized = JSON.stringify(error);
++  for (const value of forbidden) {
++    expect(serialized).not.toContain(value);
++  }
++}
++
++describe("classifyRenewalFailure", () => {
++  it("classifies a redirect as browser-context-required", () => {
++    const error = new AppError(
++      "AUTH_CONTEXT_UNAVAILABLE",
++      "SSO refresh requires a browser-managed authentication context",
++      {
++        status: 303,
++        locationOrigin: "https://accounts.snapchat.com",
++        locationPath: "/v2/login",
++        locationQueryKeys: ["code"],
++        locationHasCode: true,
++        locationHasError: false,
++        leaked: "Bearer top-secret",
++      },
++    );
++
++    const classified = classifyRenewalFailure(error);
++
++    expect(classified).toMatchObject({
++      code: "AUTH_CONTEXT_UNAVAILABLE",
++      details: {
++        status: 303,
++        observations: [{ capability: "browser-context-required", status: "rejected", httpStatus: 303 }],
++      },
++    });
++    expectSafeSerialization(classified, ["Bearer", "top-secret"]);
++  });
++
++  it("classifies a missing DBSC profile as unavailable without preserving unsafe details", () => {
++    const error = new AppError(
++      "AUTH_CONTEXT_UNAVAILABLE",
++      "Brave DBSC profile directory is unavailable",
++      {
++        profileDir: "C:/Users/example/AppData/Local/Brave/profile",
++        secureSessionResponse: "proof-secret",
++      },
++    );
++
++    const classified = classifyRenewalFailure(error);
++
++    expect(classified).toMatchObject({
++      code: "AUTH_CONTEXT_UNAVAILABLE",
++      details: {
++        observations: [{ capability: "dbsc-profile", status: "unavailable" }],
++      },
++    });
++    expectSafeSerialization(classified, [
++      "C:/Users/example/AppData/Local/Brave/profile",
++      "secureSessionResponse",
++      "proof-secret",
++    ]);
++  });
++
++  it("classifies an SSO 403 as browser-context-required", () => {
++    const error = new AppError(
++      "SESSION_REEXPORT_REQUIRED",
++      "Exported Snapchat cookies can no longer refresh authentication",
++      {
++        status: 403,
++        cookieHeader: "sc-a-session=secret",
++      },
++    );
++
++    const classified = classifyRenewalFailure(error);
++
++    expect(classified).toMatchObject({
++      code: "AUTH_CONTEXT_UNAVAILABLE",
++      details: {
++        status: 403,
++        observations: [{ capability: "browser-context-required", status: "rejected", httpStatus: 403 }],
++      },
++    });
++    expectSafeSerialization(classified, ["sc-a-session", "secret"]);
++  });
++
++  it("classifies a malformed token response as rejected without echoing the token", () => {
++    const error = new AppError(
++      "SESSION_REEXPORT_REQUIRED",
++      "SSO refresh returned an invalid token",
++      {
++        responseBody: "x".repeat(96),
++      },
++    );
++
++    const classified = classifyRenewalFailure(error);
++
++    expect(classified).toMatchObject({
++      code: "SESSION_REEXPORT_REQUIRED",
++      details: {
++        observations: [{ capability: "manual-session", status: "rejected" }],
++      },
++    });
++    expectSafeSerialization(classified, ["xxxxxxxx", "responseBody"]);
++  });
++
++  it("wraps an unknown failure in a safe renewal contract", () => {
++    const classified = classifyRenewalFailure(new Error("cookie=secret-token"));
++
++    expect(classified).toMatchObject({
++      code: "SESSION_REEXPORT_REQUIRED",
++      message: "CLI-only authentication renewal failed",
++      details: {
++        observations: [{ capability: "manual-session", status: "rejected" }],
++      },
++    });
++    expectSafeSerialization(classified, ["cookie=secret-token", "secret-token"]);
++  });
++});
+

@@ -32,6 +32,13 @@ describe("classifyAuthGap", () => {
     ])).toEqual({ kind: "browser-context-required", directNodeStillViable: false });
   });
 
+  it("identifies browser execution binding from a fresh Edge request and Node bearer replay", () => {
+    expect(classifyAuthGap([
+      result("edge-original", 200),
+      result("node-bearer", 401),
+    ])).toEqual({ kind: "browser-context-required", directNodeStillViable: false });
+  });
+
   it("does not overclaim when the browser replay also fails", () => {
     expect(classifyAuthGap([
       result("edge-original", 200),

@@ -1,0 +1,472 @@
+# Review package: afaeed0..dc24594
+
+## Commits and diff
+Exit code: 0
+Wall time: 0.7 seconds
+Output:
+dc24594 feat: coordinate safe auth refresh retries
+ src/media/official-upload.ts          |  6 ++-
+ src/messaging/client.ts               |  6 ++-
+ src/transport/grpc-client.ts          | 19 +++++++-
+ tests/media/official-upload.test.ts   |  6 ++-
+ tests/messaging/client.test.ts        |  8 +++-
+ tests/transport/auth-provider.test.ts | 10 +++++
+ tests/transport/grpc-client.test.ts   | 84 ++++++++++++++++++++++++++++++++---
+ 7 files changed, 126 insertions(+), 13 deletions(-)
+diff --git a/src/media/official-upload.ts b/src/media/official-upload.ts
+index 108bc68..d667743 100644
+--- a/src/media/official-upload.ts
++++ b/src/media/official-upload.ts
+@@ -41,21 +41,25 @@ export async function uploadOfficialPhotoContent(
+     throw new AppError("UPLOAD_FAILED", "Native photo Snap requires exactly one local media reference", {
+       count: original.localMediaReferences.length,
+     });
+   }
+   const reference = original.localMediaReferences[0]!;
+   const encrypted = await dependencies.builder.encryptMedia(reference);
+   const locationResult = await dependencies.grpc.unary(
+     "snapchat.content.v2.MediaDeliveryService",
+     "GetUploadLocations",
+     encodeGetUploadLocationsRequest(),
+-    { timeoutMs: 30_000, retryKind: "idempotent" },
++    {
++      timeoutMs: 30_000,
++      retryKind: "idempotent",
++      replayPolicy: "idempotent",
++    },
+   );
+   const location = parseUploadLocation(locationResult.data);
+   const body = new ArrayBuffer(encrypted.encryptedData.length);
+   new Uint8Array(body).set(encrypted.encryptedData);
+   let response: Response;
+   try {
+     response = await (dependencies.fetch ?? globalThis.fetch)(location.uploadUrl, {
+       method: "PUT",
+       headers: { "content-type": "application/octet-stream" },
+       body,
+diff --git a/src/messaging/client.ts b/src/messaging/client.ts
+index 2e2c7c2..5d9420d 100644
+--- a/src/messaging/client.ts
++++ b/src/messaging/client.ts
+@@ -87,21 +87,25 @@ export class MessagingClient {
+         "UNSUPPORTED_BUILD",
+         "Official runtime did not provide a CreateContentMessage payload",
+       );
+     }
+ 
+     try {
+       await this.dependencies.grpc.unary(
+         "messagingcoreservice.MessagingCoreService",
+         "CreateContentMessage",
+         encrypted.createContentMessagePayload,
+-        { timeoutMs: 30_000, retryKind: "message-with-client-id" },
++        {
++          timeoutMs: 30_000,
++          retryKind: "message-with-client-id",
++          replayPolicy: "ambiguous-send",
++        },
+       );
+     } catch (error) {
+       if (error instanceof AppError && error.code === "NETWORK_FAILED") {
+         throw new AppError(
+           "DELIVERY_UNCONFIRMED",
+           "Chat delivery could not be confirmed and was not retried",
+           { clientMessageId },
+         );
+       }
+       throw error;
+diff --git a/src/transport/grpc-client.ts b/src/transport/grpc-client.ts
+index 9643de5..193f537 100644
+--- a/src/transport/grpc-client.ts
++++ b/src/transport/grpc-client.ts
+@@ -2,25 +2,28 @@ import { AppError } from "../errors.js";
+ import { decodeGrpcWebFrames, encodeDataFrame } from "../wire/grpc-web.js";
+ import type { AuthRefreshReason, RequestAuthSource } from "./auth-provider.js";
+ 
+ const ALLOWED_REQUEST_HEADERS = new Set([
+   "mcs-cof-ids-bin",
+   "x-grpc-web",
+   "x-snap-client-user-agent",
+   "x-user-agent",
+ ]);
+ 
++export type RequestReplayPolicy = "read-only" | "idempotent" | "ambiguous-send";
++
+ export interface UnaryCallOptions {
+   readonly signal?: AbortSignal;
+   readonly headers?: Readonly<Record<string, string>>;
+   readonly timeoutMs: number;
+   readonly retryKind: "none" | "idempotent" | "message-with-client-id";
++  readonly replayPolicy?: RequestReplayPolicy;
+ }
+ 
+ export interface UnaryResult {
+   readonly data: Uint8Array;
+   readonly trailers: ReadonlyMap<string, string>;
+   readonly httpStatus: number;
+ }
+ 
+ export interface GrpcWebClientOptions {
+   readonly auth: RequestAuthSource;
+@@ -53,20 +56,32 @@ function retryAfterMilliseconds(value: string | null): number | undefined {
+ function refreshReason(httpStatus: number, grpcStatus?: number): AuthRefreshReason | undefined {
+   if (httpStatus === 401 || httpStatus === 403) {
+     return { kind: "http", status: httpStatus };
+   }
+   if (grpcStatus === 7 || grpcStatus === 16) {
+     return { kind: "grpc", status: grpcStatus };
+   }
+   return undefined;
+ }
+ 
++function requestReplayPolicy(options: UnaryCallOptions): RequestReplayPolicy | undefined {
++  if (options.replayPolicy !== undefined) return options.replayPolicy;
++  if (options.retryKind === "idempotent") return "idempotent";
++  if (options.retryKind === "message-with-client-id") return "ambiguous-send";
++  return undefined;
++}
++
++function canReplayAfterHttpAuthFailure(options: UnaryCallOptions): boolean {
++  const policy = requestReplayPolicy(options);
++  return policy === "read-only" || policy === "idempotent";
++}
++
+ export class GrpcWebClient {
+   private readonly fetch: typeof globalThis.fetch;
+   private readonly baseUrl: string;
+ 
+   constructor(private readonly options: GrpcWebClientOptions) {
+     this.fetch = options.fetch ?? globalThis.fetch;
+     this.baseUrl = options.baseUrl ?? "https://web.snapchat.com";
+   }
+ 
+   async unary(
+@@ -104,21 +119,21 @@ export class GrpcWebClient {
+       } catch (error) {
+         throw new AppError("NETWORK_FAILED", "gRPC-Web request failed", {
+           errorName: error instanceof Error ? error.name : "UnknownError",
+         });
+       } finally {
+         clearTimeout(timeout);
+         options.signal?.removeEventListener("abort", abort);
+       }
+ 
+       const httpRefresh = refreshReason(response.status);
+-      if (httpRefresh !== undefined && attempt === 0) {
++      if (httpRefresh !== undefined && attempt === 0 && canReplayAfterHttpAuthFailure(options)) {
+         await this.options.auth.refreshOnce(httpRefresh);
+         continue;
+       }
+       if (response.status === 429) {
+         throw new AppError("RATE_LIMITED", "gRPC-Web request was rate limited", {
+           retryAfterMs: retryAfterMilliseconds(response.headers.get("retry-after")),
+         });
+       }
+       if (!response.ok) {
+         throw new AppError("NETWORK_FAILED", "gRPC-Web request returned an HTTP error", {
+@@ -140,21 +155,21 @@ export class GrpcWebClient {
+           trailerFrames: trailerFrames.length,
+         });
+       }
+       const trailers = trailerFrames[0]!.headers;
+       const grpcStatusText = trailers.get("grpc-status") ?? response.headers.get("grpc-status");
+       if (grpcStatusText === null || !/^\d+$/.test(grpcStatusText)) {
+         throw new AppError("GRPC_FAILED", "gRPC-Web response is missing a valid status");
+       }
+       const grpcStatus = Number(grpcStatusText);
+       const grpcRefresh = refreshReason(response.status, grpcStatus);
+-      if (grpcRefresh !== undefined && attempt === 0) {
++      if (grpcRefresh !== undefined && attempt === 0 && canReplayAfterHttpAuthFailure(options)) {
+         await this.options.auth.refreshOnce(grpcRefresh);
+         continue;
+       }
+       if (grpcStatus !== 0) {
+         throw new AppError("GRPC_FAILED", "gRPC-Web service returned an error", { grpcStatus });
+       }
+       return {
+         data: dataFrames[0]!.payload,
+         trailers,
+         httpStatus: response.status,
+diff --git a/tests/media/official-upload.test.ts b/tests/media/official-upload.test.ts
+index c7e3f29..dc3f130 100644
+--- a/tests/media/official-upload.test.ts
++++ b/tests/media/official-upload.test.ts
+@@ -39,21 +39,25 @@ describe("official photo upload", () => {
+       return new Response(null, { status: 200 });
+     });
+ 
+     await expect(uploadOfficialPhotoContent(original, { builder, grpc, fetch }))
+       .resolves.toEqual({ content: finalized, remoteMediaReferences: { mediaReferences: [] } });
+     expect(events).toEqual(["encrypt", "location", "put", "finalize"]);
+     expect(grpc.unary).toHaveBeenCalledWith(
+       "snapchat.content.v2.MediaDeliveryService",
+       "GetUploadLocations",
+       expect.any(Uint8Array),
+-      { timeoutMs: 30_000, retryKind: "idempotent" },
++      {
++        timeoutMs: 30_000,
++        retryKind: "idempotent",
++        replayPolicy: "idempotent",
++      },
+     );
+     expect(fetch).toHaveBeenCalledOnce();
+     expect(builder.finalizeUpload).toHaveBeenCalledWith(
+       original, 0, reference, new Uint8Array([9]), expect.any(Object),
+     );
+   });
+ 
+   it("does not finalize and does not expose a signed URL when PUT fails", async () => {
+     const signedUrl = "https://cf-st.sc-cdn.net/r/signed-secret-sentinel";
+     const payload = writeBytesField(1, concatBytes(
+diff --git a/tests/messaging/client.test.ts b/tests/messaging/client.test.ts
+index 955969c..c1ec1c5 100644
+--- a/tests/messaging/client.test.ts
++++ b/tests/messaging/client.test.ts
+@@ -51,21 +51,25 @@ describe("MessagingClient", () => {
+       clientMessageId: "44444444-4444-4444-8444-444444444444",
+       status: "confirmed",
+     });
+ 
+     expect(events).toEqual(["typing", "encrypt", "send", "export", "persist"]);
+     expect(deps.runtime.encryptChat).toHaveBeenCalledWith({ ...input, clientMessageId: "44444444-4444-4444-8444-444444444444" });
+     expect(deps.grpc.unary).toHaveBeenCalledWith(
+       "messagingcoreservice.MessagingCoreService",
+       "CreateContentMessage",
+       new Uint8Array([1, 2, 3]),
+-      { timeoutMs: 30_000, retryKind: "message-with-client-id" },
++      {
++        timeoutMs: 30_000,
++        retryKind: "message-with-client-id",
++        replayPolicy: "ambiguous-send",
++      },
+     );
+   });
+ 
+   it("preserves a caller-provided client message ID", async () => {
+     const deps = dependencies([]);
+     const client = new MessagingClient(deps);
+     const clientMessageId = "55555555-5555-4555-8555-555555555555";
+ 
+     await client.sendText({ ...input, clientMessageId });
+     expect(deps.runtime.encryptChat).toHaveBeenCalledWith({ ...input, clientMessageId });
+@@ -89,21 +93,21 @@ describe("MessagingClient", () => {
+       contentType: "chat",
+     } as EncryptedContent);
+     const client = new MessagingClient(deps);
+ 
+     await expect(client.sendText(input)).rejects.toMatchObject({ code: "UNSUPPORTED_BUILD" });
+     expect(deps.grpc.unary).not.toHaveBeenCalled();
+   });
+ 
+   it("maps an ambiguous network completion without retrying the logical send", async () => {
+     const deps = dependencies([]);
+-    deps.grpc.unary.mockRejectedValue(new AppError("NETWORK_FAILED", "socket closed"));
++    deps.grpc.unary.mockRejectedValue(new AppError("NETWORK_FAILED", "socket closed", { status: 401 }));
+     const client = new MessagingClient(deps);
+ 
+     await expect(client.sendText(input)).rejects.toMatchObject({
+       code: "DELIVERY_UNCONFIRMED",
+       details: { clientMessageId: "44444444-4444-4444-8444-444444444444" },
+     });
+     expect(deps.runtime.encryptChat).toHaveBeenCalledOnce();
+     expect(deps.grpc.unary).toHaveBeenCalledOnce();
+     expect(deps.runtime.exportState).not.toHaveBeenCalled();
+   });
+diff --git a/tests/transport/auth-provider.test.ts b/tests/transport/auth-provider.test.ts
+index a137f60..4dc391e 100644
+--- a/tests/transport/auth-provider.test.ts
++++ b/tests/transport/auth-provider.test.ts
+@@ -87,11 +87,21 @@ describe("AuthProvider", () => {
+   it("keeps the old session when refresh persistence fails", async () => {
+     const original = session();
+     const provider = new AuthProvider(original, {
+       refresh: async () => ({ ...original, auth: { ...original.auth, httpToken: "secret-new" } }),
+       persist: async () => { throw new Error("disk unavailable"); },
+     });
+ 
+     await expect(provider.refreshOnce({ kind: "http", status: 403 })).rejects.toThrow("disk unavailable");
+     expect(provider.sessionSnapshot()).toBe(original);
+   });
++
++  it("keeps the old session when refresh itself fails", async () => {
++    const original = session();
++    const provider = new AuthProvider(original, {
++      refresh: async () => { throw new Error("refresh denied"); },
++    });
++
++    await expect(provider.refreshOnce({ kind: "http", status: 401 })).rejects.toThrow("refresh denied");
++    expect(provider.sessionSnapshot()).toBe(original);
++  });
+ });
+diff --git a/tests/transport/grpc-client.test.ts b/tests/transport/grpc-client.test.ts
+index f7d32ce..852e684 100644
+--- a/tests/transport/grpc-client.test.ts
++++ b/tests/transport/grpc-client.test.ts
+@@ -20,88 +20,160 @@ function auth() {
+   };
+ }
+ 
+ function body(bytes: Uint8Array): ArrayBuffer {
+   const result = new ArrayBuffer(bytes.length);
+   new Uint8Array(result).set(bytes);
+   return result;
+ }
+ 
+ const options = { timeoutMs: 1_000, retryKind: "message-with-client-id" as const };
++const readOnlyOptions = {
++  timeoutMs: 1_000,
++  retryKind: "none" as const,
++  replayPolicy: "read-only" as const,
++};
++const idempotentOptions = {
++  timeoutMs: 1_000,
++  retryKind: "idempotent" as const,
++  replayPolicy: "idempotent" as const,
++};
++const ambiguousSendOptions = {
++  timeoutMs: 1_000,
++  retryKind: "message-with-client-id" as const,
++  replayPolicy: "ambiguous-send" as const,
++};
+ 
+ describe("GrpcWebClient", () => {
+   it("frames a unary request, allowlists headers, and parses data plus trailers", async () => {
+     const source = auth();
+     const responseBody = concatBytes(
+       encodeDataFrame(new Uint8Array([4, 5, 6])),
+       encodeTrailerFrame(new Map([["grpc-status", "0"], ["grpc-message", "OK"]])),
+     );
+     const fetch = vi.fn(async (_url: string | URL | Request, _init?: RequestInit) =>
+       new Response(body(responseBody), { status: 200 }));
+     const client = new GrpcWebClient({ auth: source, fetch });
+ 
+     await expect(client.unary(
+       "messagingcoreservice.MessagingCoreService",
+       "CreateContentMessage",
+       new Uint8Array([1, 2, 3]),
+-      options,
++      ambiguousSendOptions,
+     )).resolves.toMatchObject({ data: new Uint8Array([4, 5, 6]), httpStatus: 200 });
+ 
+     const [url, init] = fetch.mock.calls[0]!;
+     expect(String(url)).toBe("https://web.snapchat.com/messagingcoreservice.MessagingCoreService/CreateContentMessage");
+     const headers = new Headers(init?.headers);
+     expect(headers.get("authorization")).toBe("Bearer secret-token");
+     expect(headers.get("content-type")).toBe("application/grpc-web+proto");
+     expect(headers.get("mcs-cof-ids-bin")).toBe("cof");
+     expect(headers.has("not-allowed")).toBe(false);
+     expect(headers.has("cookie")).toBe(false);
+     expect(new Uint8Array(init?.body as ArrayBuffer)).toEqual(encodeDataFrame(new Uint8Array([1, 2, 3])));
+   });
+ 
+-  it("refreshes once on HTTP 401 and retries with the same payload", async () => {
++  it("refreshes once on HTTP 401 and retries a read-only request", async () => {
+     const source = auth();
+     const ok = concatBytes(
+       encodeDataFrame(new Uint8Array([9])),
+       encodeTrailerFrame(new Map([["grpc-status", "0"]])),
+     );
+     const fetch = vi.fn()
+       .mockResolvedValueOnce(new Response(null, { status: 401 }))
+       .mockResolvedValueOnce(new Response(body(ok), { status: 200 }));
+     const client = new GrpcWebClient({ auth: source, fetch });
+ 
+-    await expect(client.unary("service.Name", "Method", new Uint8Array([8]), options))
++    await expect(client.unary("service.Name", "Method", new Uint8Array([8]), readOnlyOptions))
+       .resolves.toMatchObject({ data: new Uint8Array([9]) });
+     expect(source.refreshOnce).toHaveBeenCalledWith({ kind: "http", status: 401 });
+     expect(fetch).toHaveBeenCalledTimes(2);
+   });
+ 
++  it("refreshes once on HTTP 403 and retries an idempotent request", async () => {
++    const source = auth();
++    const ok = concatBytes(
++      encodeDataFrame(new Uint8Array([7])),
++      encodeTrailerFrame(new Map([["grpc-status", "0"]])),
++    );
++    const fetch = vi.fn()
++      .mockResolvedValueOnce(new Response(null, { status: 403 }))
++      .mockResolvedValueOnce(new Response(body(ok), { status: 200 }));
++    const client = new GrpcWebClient({ auth: source, fetch });
++
++    await expect(client.unary("service.Name", "Method", new Uint8Array([8]), idempotentOptions))
++      .resolves.toMatchObject({ data: new Uint8Array([7]) });
++    expect(source.refreshOnce).toHaveBeenCalledWith({ kind: "http", status: 403 });
++    expect(fetch).toHaveBeenCalledTimes(2);
++  });
++
++  it("returns a second HTTP 401 without a refresh loop", async () => {
++    const source = auth();
++    const fetch = vi.fn()
++      .mockResolvedValueOnce(new Response(null, { status: 401 }))
++      .mockResolvedValueOnce(new Response(null, { status: 401 }));
++    const client = new GrpcWebClient({ auth: source, fetch });
++
++    await expect(client.unary("service.Name", "Method", new Uint8Array([8]), readOnlyOptions))
++      .rejects.toMatchObject({ code: "NETWORK_FAILED", details: { status: 401 } });
++    expect(source.refreshOnce).toHaveBeenCalledOnce();
++    expect(fetch).toHaveBeenCalledTimes(2);
++  });
++
++  it("does not refresh or retry an ambiguous send after HTTP 401", async () => {
++    const source = auth();
++    const fetch = vi.fn()
++      .mockResolvedValueOnce(new Response(null, { status: 401 }));
++    const client = new GrpcWebClient({ auth: source, fetch });
++
++    await expect(client.unary("service.Name", "Method", new Uint8Array([8]), ambiguousSendOptions))
++      .rejects.toMatchObject({ code: "NETWORK_FAILED", details: { status: 401 } });
++    expect(source.refreshOnce).not.toHaveBeenCalled();
++    expect(fetch).toHaveBeenCalledOnce();
++  });
++
+   it("refreshes once on gRPC 16 and rejects a second authentication failure", async () => {
+     const source = auth();
+     const unauthenticated = concatBytes(
+       encodeDataFrame(new Uint8Array()),
+       encodeTrailerFrame(new Map([["grpc-status", "16"]])),
+     );
+     const fetch = vi.fn(async () => new Response(body(unauthenticated), { status: 200 }));
+     const client = new GrpcWebClient({ auth: source, fetch });
+ 
+-    await expect(client.unary("service.Name", "Method", new Uint8Array(), options))
++    await expect(client.unary("service.Name", "Method", new Uint8Array(), readOnlyOptions))
+       .rejects.toMatchObject({ code: "GRPC_FAILED", details: { grpcStatus: 16 } });
+     expect(source.refreshOnce).toHaveBeenCalledOnce();
+     expect(fetch).toHaveBeenCalledTimes(2);
+   });
+ 
++  it("does not refresh or retry an ambiguous send after gRPC 16", async () => {
++    const source = auth();
++    const unauthenticated = concatBytes(
++      encodeDataFrame(new Uint8Array()),
++      encodeTrailerFrame(new Map([["grpc-status", "16"]])),
++    );
++    const fetch = vi.fn(async () => new Response(body(unauthenticated), { status: 200 }));
++    const client = new GrpcWebClient({ auth: source, fetch });
++
++    await expect(client.unary("service.Name", "Method", new Uint8Array(), ambiguousSendOptions))
++      .rejects.toMatchObject({ code: "GRPC_FAILED", details: { grpcStatus: 16 } });
++    expect(source.refreshOnce).not.toHaveBeenCalled();
++    expect(fetch).toHaveBeenCalledOnce();
++  });
++
+   it("reports rate limiting and malformed responses without secret values", async () => {
+     const source = auth();
+     const fetch = vi.fn()
+       .mockResolvedValueOnce(new Response(null, { status: 429, headers: { "retry-after": "3" } }))
+       .mockResolvedValueOnce(new Response(body(new Uint8Array([0])), { status: 200 }));
+     const client = new GrpcWebClient({ auth: source, fetch });
+ 
+-    const rate = await client.unary("service.Name", "Method", new Uint8Array(), options)
++    const rate = await client.unary("service.Name", "Method", new Uint8Array(), readOnlyOptions)
+       .catch((error: unknown) => error as AppError);
+     expect(rate).toMatchObject({ code: "RATE_LIMITED", details: { retryAfterMs: 3_000 } });
+     expect(JSON.stringify(rate)).not.toContain("secret-token");
+ 
+-    await expect(client.unary("service.Name", "Method", new Uint8Array(), options))
++    await expect(client.unary("service.Name", "Method", new Uint8Array(), readOnlyOptions))
+       .rejects.toMatchObject({ code: "GRPC_FAILED" });
+   });
+ });
+

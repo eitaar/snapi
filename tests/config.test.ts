@@ -39,6 +39,30 @@ describe("loadConfig", () => {
   it("allows a missing optional environment file", () => {
     expect(() => loadEnvironmentFile("definitely-missing-test.env")).not.toThrow();
   });
+
+  it("loads optional browser cookie headers without requiring them", () => {
+    const config = loadConfig({
+      SNAP_SESSION_FILE: "session.json",
+      SNAP_ASSET_DIR: "assets",
+      SNAP_ACCOUNT_ID: "account-1",
+      SNAP_BUILD_ID: "8dd50222",
+      SNAP_COOKIE_HEADER: "  web=session; sc_at=token  ",
+      SNAP_SSO_COOKIE_HEADER: " accounts=session; __Host-sc-a-auth-session=token ",
+    });
+
+    expect(config.cookieHeader).toBe("web=session; sc_at=token");
+    expect(config.ssoCookieHeader).toBe("accounts=session; __Host-sc-a-auth-session=token");
+  });
+
+  it("rejects browser cookie headers containing line breaks", () => {
+    expect(() => loadConfig({
+      SNAP_SESSION_FILE: "session.json",
+      SNAP_ASSET_DIR: "assets",
+      SNAP_ACCOUNT_ID: "account-1",
+      SNAP_BUILD_ID: "8dd50222",
+      SNAP_COOKIE_HEADER: "web=session\r\nX-Injected: yes",
+    })).toThrowError(AppError);
+  });
 });
 
   it("defaults to human output", () => {

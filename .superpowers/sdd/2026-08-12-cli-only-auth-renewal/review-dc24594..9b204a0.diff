@@ -1,0 +1,267 @@
+# Review package: dc24594..9b204a0
+
+## Commits and diff
+Exit code: 0
+Wall time: 0.6 seconds
+Output:
+9b204a0 fix: preserve unconfirmed delivery on auth failures
+ src/media/client.ts                 | 14 ++++++++++++--
+ src/messaging/client.ts             |  8 +++++++-
+ tests/media/client.test.ts          | 26 +++++++++++++++++++++++++-
+ tests/messaging/client.test.ts      |  9 +++++++++
+ tests/transport/grpc-client.test.ts | 15 +++++++++++++++
+ 5 files changed, 68 insertions(+), 4 deletions(-)
+diff --git a/src/media/client.ts b/src/media/client.ts
+index 29f709b..73cca25 100644
+--- a/src/media/client.ts
++++ b/src/media/client.ts
+@@ -24,20 +24,26 @@ interface PhotoGrpc {
+     method: string,
+     payload: Uint8Array,
+     options: UnaryCallOptions,
+   ): Promise<UnaryResult>;
+ }
+ 
+ interface PhotoStateStore {
+   write(value: CryptoStateExport): Promise<void>;
+ }
+ 
++function isAmbiguousAuthFailure(error: unknown): error is AppError {
++  return error instanceof AppError
++    && (error.code === "NETWORK_FAILED"
++      || (error.code === "GRPC_FAILED" && (error.details.grpcStatus === 7 || error.details.grpcStatus === 16)));
++}
++
+ export interface MediaClientDependencies {
+   readonly runtime: PhotoRuntime;
+   readonly grpc: PhotoGrpc;
+   readonly stateStore: PhotoStateStore;
+   readonly randomUuid?: () => string;
+ }
+ 
+ export class MediaClient {
+   constructor(private readonly dependencies: MediaClientDependencies) {}
+ 
+@@ -58,24 +64,28 @@ export class MediaClient {
+       throw new AppError(
+         "UNSUPPORTED_BUILD",
+         "Official runtime did not provide a photo CreateContentMessage payload",
+       );
+     }
+     try {
+       await this.dependencies.grpc.unary(
+         "messagingcoreservice.MessagingCoreService",
+         "CreateContentMessage",
+         encrypted.createContentMessagePayload,
+-        { timeoutMs: 30_000, retryKind: "message-with-client-id" },
++        {
++          timeoutMs: 30_000,
++          retryKind: "message-with-client-id",
++          replayPolicy: "ambiguous-send",
++        },
+       );
+     } catch (error) {
+-      if (error instanceof AppError && error.code === "NETWORK_FAILED") {
++      if (isAmbiguousAuthFailure(error)) {
+         throw new AppError(
+           "DELIVERY_UNCONFIRMED",
+           "Photo Snap delivery could not be confirmed and was not retried",
+           { clientMessageId },
+         );
+       }
+       throw error;
+     }
+     const state = await this.dependencies.runtime.exportState();
+     await this.dependencies.stateStore.write(state);
+diff --git a/src/messaging/client.ts b/src/messaging/client.ts
+index 5d9420d..c196ae5 100644
+--- a/src/messaging/client.ts
++++ b/src/messaging/client.ts
+@@ -40,20 +40,26 @@ interface MessagingGrpc {
+     method: string,
+     payload: Uint8Array,
+     options: UnaryCallOptions,
+   ): Promise<UnaryResult>;
+ }
+ 
+ interface CryptoStateStore {
+   write(value: CryptoStateExport): Promise<void>;
+ }
+ 
++function isAmbiguousAuthFailure(error: unknown): error is AppError {
++  return error instanceof AppError
++    && (error.code === "NETWORK_FAILED"
++      || (error.code === "GRPC_FAILED" && (error.details.grpcStatus === 7 || error.details.grpcStatus === 16)));
++}
++
+ export interface MessagingClientDependencies {
+   readonly runtime: MessagingRuntime;
+   readonly grpc: MessagingGrpc;
+   readonly stateStore: CryptoStateStore;
+   readonly sendTyping?: (conversationId: string) => Promise<void>;
+   readonly randomUuid?: () => string;
+   readonly pollDelayMs?: number;
+ }
+ 
+ export class MessagingClient {
+@@ -94,21 +100,21 @@ export class MessagingClient {
+         "messagingcoreservice.MessagingCoreService",
+         "CreateContentMessage",
+         encrypted.createContentMessagePayload,
+         {
+           timeoutMs: 30_000,
+           retryKind: "message-with-client-id",
+           replayPolicy: "ambiguous-send",
+         },
+       );
+     } catch (error) {
+-      if (error instanceof AppError && error.code === "NETWORK_FAILED") {
++      if (isAmbiguousAuthFailure(error)) {
+         throw new AppError(
+           "DELIVERY_UNCONFIRMED",
+           "Chat delivery could not be confirmed and was not retried",
+           { clientMessageId },
+         );
+       }
+       throw error;
+     }
+ 
+     const state = await this.dependencies.runtime.exportState();
+diff --git a/tests/media/client.test.ts b/tests/media/client.test.ts
+index 8af382e..6bfbb0e 100644
+--- a/tests/media/client.test.ts
++++ b/tests/media/client.test.ts
+@@ -38,21 +38,25 @@ describe("MediaClient", () => {
+       bytes: png(),
+     })).resolves.toEqual({ clientMessageId: "message-id", status: "confirmed" });
+     expect(events).toEqual(["runtime", "send", "export", "persist"]);
+     expect(runtime.createPhotoSnap).toHaveBeenCalledWith(expect.objectContaining({
+       clientMessageId: "message-id", mimeType: "image/png", width: 2, height: 3,
+     }));
+     expect(grpc.unary).toHaveBeenCalledWith(
+       "messagingcoreservice.MessagingCoreService",
+       "CreateContentMessage",
+       payload,
+-      { timeoutMs: 30_000, retryKind: "message-with-client-id" },
++      {
++        timeoutMs: 30_000,
++        retryKind: "message-with-client-id",
++        replayPolicy: "ambiguous-send",
++      },
+     );
+   });
+ 
+   it("does not retry an ambiguous final response", async () => {
+     const grpc = { unary: vi.fn(async () => { throw new AppError("NETWORK_FAILED", "ambiguous"); }) };
+     const client = new MediaClient({
+       runtime: {
+         createPhotoSnap: async () => ({
+           bytes: new Uint8Array([1]), contentType: "photo-snap", createContentMessagePayload: new Uint8Array([2]),
+         }),
+@@ -60,11 +64,31 @@ describe("MediaClient", () => {
+       },
+       grpc,
+       stateStore: { write: vi.fn() },
+       randomUuid: () => "message-id",
+     });
+     await expect(client.sendPhotoSnap({
+       recipientId: "recipient", conversationId: "conversation", filename: "photo.png", bytes: png(),
+     })).rejects.toMatchObject({ code: "DELIVERY_UNCONFIRMED" });
+     expect(grpc.unary).toHaveBeenCalledOnce();
+   });
++
++  it("maps an ambiguous gRPC authentication failure to unconfirmed delivery", async () => {
++    const grpc = { unary: vi.fn(async () => { throw new AppError("GRPC_FAILED", "auth failed", { grpcStatus: 16 }); }) };
++    const client = new MediaClient({
++      runtime: {
++        createPhotoSnap: async () => ({
++          bytes: new Uint8Array([1]), contentType: "photo-snap", createContentMessagePayload: new Uint8Array([2]),
++        }),
++        exportState: async () => ({ localStorage: {}, sessionStorage: {}, indexedDb: { databases: [] } }),
++      },
++      grpc,
++      stateStore: { write: vi.fn() },
++      randomUuid: () => "message-id",
++    });
++
++    await expect(client.sendPhotoSnap({
++      recipientId: "recipient", conversationId: "conversation", filename: "photo.png", bytes: png(),
++    })).rejects.toMatchObject({ code: "DELIVERY_UNCONFIRMED" });
++    expect(grpc.unary).toHaveBeenCalledOnce();
++  });
+ });
+diff --git a/tests/messaging/client.test.ts b/tests/messaging/client.test.ts
+index c1ec1c5..6a103c2 100644
+--- a/tests/messaging/client.test.ts
++++ b/tests/messaging/client.test.ts
+@@ -105,20 +105,29 @@ describe("MessagingClient", () => {
+ 
+     await expect(client.sendText(input)).rejects.toMatchObject({
+       code: "DELIVERY_UNCONFIRMED",
+       details: { clientMessageId: "44444444-4444-4444-8444-444444444444" },
+     });
+     expect(deps.runtime.encryptChat).toHaveBeenCalledOnce();
+     expect(deps.grpc.unary).toHaveBeenCalledOnce();
+     expect(deps.runtime.exportState).not.toHaveBeenCalled();
+   });
+ 
++  it("maps ambiguous gRPC authentication failure to unconfirmed delivery", async () => {
++    const deps = dependencies([]);
++    deps.grpc.unary.mockRejectedValue(new AppError("GRPC_FAILED", "auth failed", { grpcStatus: 7 }));
++    const client = new MessagingClient(deps);
++
++    await expect(client.sendText(input)).rejects.toMatchObject({ code: "DELIVERY_UNCONFIRMED" });
++    expect(deps.grpc.unary).toHaveBeenCalledOnce();
++  });
++
+   it("persists received plaintext state before ordered emission and deduplicates IDs", async () => {
+     const events: string[] = [];
+     const deps = dependencies(events);
+     const message = {
+       senderId: "sender",
+       conversationId: "conversation",
+       messageId: "message",
+       text: "received text",
+       timestamp: "2026-08-11T00:00:00.000Z",
+     };
+diff --git a/tests/transport/grpc-client.test.ts b/tests/transport/grpc-client.test.ts
+index 852e684..15fedd8 100644
+--- a/tests/transport/grpc-client.test.ts
++++ b/tests/transport/grpc-client.test.ts
+@@ -154,20 +154,35 @@ describe("GrpcWebClient", () => {
+     );
+     const fetch = vi.fn(async () => new Response(body(unauthenticated), { status: 200 }));
+     const client = new GrpcWebClient({ auth: source, fetch });
+ 
+     await expect(client.unary("service.Name", "Method", new Uint8Array(), ambiguousSendOptions))
+       .rejects.toMatchObject({ code: "GRPC_FAILED", details: { grpcStatus: 16 } });
+     expect(source.refreshOnce).not.toHaveBeenCalled();
+     expect(fetch).toHaveBeenCalledOnce();
+   });
+ 
++  it("does not refresh or retry an ambiguous send after gRPC 7", async () => {
++    const source = auth();
++    const unauthenticated = concatBytes(
++      encodeDataFrame(new Uint8Array()),
++      encodeTrailerFrame(new Map([["grpc-status", "7"]])),
++    );
++    const fetch = vi.fn(async () => new Response(body(unauthenticated), { status: 200 }));
++    const client = new GrpcWebClient({ auth: source, fetch });
++
++    await expect(client.unary("service.Name", "Method", new Uint8Array(), ambiguousSendOptions))
++      .rejects.toMatchObject({ code: "GRPC_FAILED", details: { grpcStatus: 7 } });
++    expect(source.refreshOnce).not.toHaveBeenCalled();
++    expect(fetch).toHaveBeenCalledOnce();
++  });
++
+   it("reports rate limiting and malformed responses without secret values", async () => {
+     const source = auth();
+     const fetch = vi.fn()
+       .mockResolvedValueOnce(new Response(null, { status: 429, headers: { "retry-after": "3" } }))
+       .mockResolvedValueOnce(new Response(body(new Uint8Array([0])), { status: 200 }));
+     const client = new GrpcWebClient({ auth: source, fetch });
+ 
+     const rate = await client.unary("service.Name", "Method", new Uint8Array(), readOnlyOptions)
+       .catch((error: unknown) => error as AppError);
+     expect(rate).toMatchObject({ code: "RATE_LIMITED", details: { retryAfterMs: 3_000 } });
+

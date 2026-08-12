@@ -6,11 +6,20 @@ const ALLOWED_ORIGIN = "https://web.snapchat.com";
 const ALLOWED_PATHS = new Set([
   "/messagingcoreservice.MessagingCoreService/DeltaSync",
   "/messagingcoreservice.MessagingCoreService/GetGroups",
+  "/com.snapchat.deltaforce.external.DeltaForce/DeltaSync",
 ]);
 const SAFE_REQUEST_HEADERS = new Set([
   "accept",
+  "caller-source",
   "content-type",
+  "dnt",
   "mcs-cof-ids-bin",
+  "prefer",
+  "referer",
+  "sec-ch-ua",
+  "sec-ch-ua-mobile",
+  "sec-ch-ua-platform",
+  "user-agent",
   "x-grpc-web",
   "x-snap-client-user-agent",
   "x-user-agent",

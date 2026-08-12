@@ -1,0 +1,450 @@
+# Review package: ac3bb41..346367c
+
+## Commits and diff
+Exit code: 0
+Wall time: 0.8 seconds
+Output:
+346367c fix: keep runtime auth updates auth-only
+ .../task-4-report.md                               | 27 +++++++++++++++++----
+ src/runtime/official-worker-client.ts              | 28 ++++++++++++++--------
+ src/runtime/official-worker-entry.ts               |  6 ++---
+ src/runtime/protocol.ts                            | 20 +++++++++++++++-
+ src/runtime/worker-client.ts                       |  4 ++--
+ src/runtime/worker-entry.ts                        |  2 +-
+ tests/fixtures/runtime-worker.ts                   |  9 +++++++
+ tests/runtime/official-messaging-session.test.ts   |  3 ++-
+ 8 files changed, 76 insertions(+), 23 deletions(-)
+diff --git a/.superpowers/sdd/2026-08-12-cli-only-auth-renewal/task-4-report.md b/.superpowers/sdd/2026-08-12-cli-only-auth-renewal/task-4-report.md
+index c171d6e..239ebe9 100644
+--- a/.superpowers/sdd/2026-08-12-cli-only-auth-renewal/task-4-report.md
++++ b/.superpowers/sdd/2026-08-12-cli-only-auth-renewal/task-4-report.md
+@@ -9,20 +9,22 @@ Implemented the missing runtime auth-update boundary so a refreshed `SessionExpo
+ - `src/runtime/protocol.ts`
+ - `src/runtime/worker-client.ts`
+ - `src/runtime/worker-entry.ts`
+ - `src/runtime/official-worker-client.ts`
+ - `src/client.ts`
+ - `tests/runtime/worker-client.test.ts`
+ - `tests/runtime/official-messaging-session.test.ts`
+ - `tests/client.test.ts`
+ - `tests/fixtures/runtime-worker.ts`
+ - `tests/fixtures/official-session-contract-worker.mjs`
++- `src/runtime/official-worker-entry.ts`
++- `src/friends/client.ts`
+ 
+ ## RED evidence
+ 
+ Focused command from the brief:
+ 
+ ```powershell
+ npm test -- tests/runtime/worker-client.test.ts tests/runtime/official-messaging-session.test.ts tests/client.test.ts
+ ```
+ 
+ Observed failing results before implementation:
+@@ -51,28 +53,28 @@ npm test -- tests/runtime/worker-client.test.ts tests/runtime/official-messaging
+ Passing result:
+ 
+ - `Test Files  3 passed (3)`
+ - `Tests  20 passed (20)`
+ - exit code `0`
+ 
+ ## Behavior implemented
+ 
+ ### Runtime protocol boundary
+ 
+-- added `RuntimeCommand | { method: "updateAuth"; session: SessionExport }`
++- added `RuntimeCommand | { method: "updateAuth"; auth: RuntimeAuthUpdate }`
+ - added `ContentRuntimeClient.updateAuth(session)`
+ - routed the command through `src/runtime/worker-entry.ts` to the nested `OfficialWorkerClient`
+ 
+ ### Official runtime in-memory update
+ 
+ - `OfficialWorkerClient.initializeWasm(session)` now seeds mutable safe auth-getter state
+-- `OfficialWorkerClient.updateAuth(session)` updates only:
++- `OfficialWorkerClient.updateAuth(auth)` updates only:
+   - `webCookieHeader`
+   - `ssoCookieHeader`
+   - `officialHttpToken`
+   - safe request-header getter state for `mcs-cof-ids-bin`
+ - the update path does not send protected messaging key material into the nested official Worker
+ 
+ ### Client persistence and retry boundary
+ 
+ - `src/client.ts` now updates the runtime from the `AuthProvider.persist` callback only after the persisted auth write succeeds
+ - if the runtime does not exist yet, no runtime update is attempted during initial auth setup
+@@ -83,19 +85,34 @@ Passing result:
+ - `tests/runtime/worker-client.test.ts`
+   - proves `updateAuth` changes the next read-only runtime behavior
+ - `tests/runtime/official-messaging-session.test.ts`
+   - proves refreshed auth reaches the in-memory official runtime before the next read-only call
+ - `tests/client.test.ts`
+   - proves ordering: persistence write completes before runtime update, and runtime update completes before friend-list retry
+ - focused fixtures updated to verify behavior without asserting or logging raw secret values
+ 
+ ## Self-review
+ 
+-- kept retry logic at the normal client boundary instead of depending on the untracked pre-existing friends implementation file
++- kept retry logic at the normal client boundary with the friend adapter explicitly listed in the Task 4 files
+ - verified the update path is limited to auth headers/tokens/cookies and safe getter state
+ - kept assertions secret-safe: tests check state transitions and ordering, not raw auth values in output
+ - used the exact focused RED/GREEN command from the brief
+ 
+ ## Concerns / follow-up notes
+ 
+-- the repository already contains unrelated dirty friend/Snap work; the Task 4 commit should include only the Task 4 hunks
+-- this Task 4 commit assumes the existing local friend-sync runtime surface already present in the working tree
++- the Task 4 commit includes the existing friend/Snap runtime support that shares the runtime files; those files are listed explicitly above so the mixed scope is not hidden
++
++## Fix round 1
++
++- Changed the runtime command to carry `RuntimeAuthUpdate` only: account ID, HTTP token, web Cookie, SSO Cookie, and the safe MCS-Cof header value. `ContentRuntimeClient.updateAuth(SessionExport)` now extracts this payload before posting to the Worker.
++- The nested official runtime accepts the auth-only payload; protected messaging state is not serialized by the update command.
++- Invalid host setter arguments now throw into the existing Worker error response path instead of returning without a response and hanging the caller.
++- The fixture rejects a full-session update payload so the minimization is regression-tested.
++
++Verification:
++
++```text
++npm test -- tests/runtime/worker-client.test.ts tests/runtime/official-messaging-session.test.ts tests/client.test.ts
++3 test files passed; 20 tests passed.
++```
++
++`npm run typecheck` still reports unrelated pre-existing dirty-worktree errors in the Snap event export and `src/client.ts` renewal dependency construction; no Task 4 type errors remain in the reported output.
+diff --git a/src/runtime/official-worker-client.ts b/src/runtime/official-worker-client.ts
+index 1dadf66..cf01665 100644
+--- a/src/runtime/official-worker-client.ts
++++ b/src/runtime/official-worker-client.ts
+@@ -1,17 +1,18 @@
+ import { MessageChannel, MessagePort, Worker, type TransferListItem } from "node:worker_threads";
+ import { randomUUID } from "node:crypto";
+ import { AppError } from "../errors.js";
+ import type { SessionExport } from "../session/types.js";
+ import type { IncomingSnapMediaInfo } from "./content-types.js";
+ import { syncOfficialFriends } from "./official-host-control.js";
+ import type { FriendSnapshot } from "../friends/types.js";
++import type { RuntimeAuthUpdate } from "./protocol.js";
+ 
+ interface SerializedValue {
+   readonly type: "RAW" | "HANDLER";
+   readonly name?: "proxy" | "throw";
+   readonly value: unknown;
+ }
+ 
+ interface PendingCall {
+   readonly resolve: (value: unknown) => void;
+   readonly reject: (error: AppError) => void;
+@@ -507,50 +508,57 @@ export class OfficialWorkerClient {
+     );
+     return new Promise<T>((resolve, reject) => {
+       this.pending.set(id, {
+         resolve: (value) => resolve(value as T),
+         reject,
+       });
+       this.worker.postMessage({ id, type: "APPLY", path, argumentList }, transferList);
+     });
+   }
+ 
+-  private async applyUpdatedAuth(session: SessionExport): Promise<void> {
++  private async applyUpdatedAuth(auth: RuntimeAuthUpdate): Promise<void> {
+     this.requestAuthState = {
+-      httpToken: session.auth.httpToken,
+-      mcsCofSequenceIds: session.auth.requestHeaders["mcs-cof-ids-bin"] ?? "",
++      httpToken: auth.httpToken,
++      mcsCofSequenceIds: auth.mcsCofSequenceIds,
+     };
+-    await this.apply(["__host", "setWebCookieHeader"], [session.auth.cookieHeader]);
+-    await this.apply(["__host", "setSsoCookieHeader"], [session.auth.ssoCookieHeader ?? session.auth.cookieHeader]);
+-    await this.apply(["__host", "setOfficialHttpToken"], [session.auth.httpToken]);
++    await this.apply(["__host", "setWebCookieHeader"], [auth.cookieHeader]);
++    await this.apply(["__host", "setSsoCookieHeader"], [auth.ssoCookieHeader]);
++    await this.apply(["__host", "setOfficialHttpToken"], [auth.httpToken]);
+   }
+ 
+   async initializeWasm(session: SessionExport): Promise<void> {
+-    this.accountId = session.accountId;
+-    await this.applyUpdatedAuth(session);
++    const auth: RuntimeAuthUpdate = {
++      accountId: session.accountId,
++      httpToken: session.auth.httpToken,
++      cookieHeader: session.auth.cookieHeader,
++      ssoCookieHeader: session.auth.ssoCookieHeader ?? session.auth.cookieHeader,
++      mcsCofSequenceIds: session.auth.requestHeaders["mcs-cof-ids-bin"] ?? "",
++    };
++    this.accountId = auth.accountId;
++    await this.applyUpdatedAuth(auth);
+     await this.apply(["setAuthTokenGetter"], [async () => this.requestAuthState.httpToken]);
+     await this.apply(["setMcsCofSequenceIdsGetter"], [
+       async () => this.requestAuthState.mcsCofSequenceIds,
+     ]);
+     await this.apply(["loadWasm"], [
+       randomUUID(),
+       async () => this.requestAuthState.httpToken,
+       () => undefined,
+       () => undefined,
+     ]);
+   }
+ 
+-  async updateAuth(session: SessionExport): Promise<void> {
++  async updateAuth(auth: RuntimeAuthUpdate): Promise<void> {
+     if (this.accountId === undefined) {
+       throw new AppError("CRYPTO_RUNTIME_FAILED", "Official messaging account is not initialized");
+     }
+-    await this.applyUpdatedAuth(session);
++    await this.applyUpdatedAuth(auth);
+   }
+ 
+   async createMessagingSession(args: readonly unknown[]): Promise<OfficialRemote> {
+     const result = await this.apply<unknown>(["createMessagingSession"], args);
+     if (!(result instanceof OfficialRemote)) {
+       throw new AppError("CRYPTO_RUNTIME_FAILED", "Official messaging Worker did not return a messaging session proxy");
+     }
+     return result;
+   }
+ 
+diff --git a/src/runtime/official-worker-entry.ts b/src/runtime/official-worker-entry.ts
+index 484981d..62d160a 100644
+--- a/src/runtime/official-worker-entry.ts
++++ b/src/runtime/official-worker-entry.ts
+@@ -317,39 +317,39 @@ async function handleHostControl(message: unknown): Promise<boolean> {
+     typeof candidate.id !== "string" ||
+     candidate.type !== "APPLY" ||
+     !Array.isArray(candidate.path) ||
+     candidate.path[0] !== "__host"
+   ) return false;
+   let value: unknown;
+   switch (candidate.path[1]) {
+     case "setWebCookieHeader": {
+       const argument = candidate.argumentList?.length === 1 ? candidate.argumentList[0] : undefined;
+       if (argument?.type !== "RAW" || typeof argument.value !== "string" || argument.value.trim() === "") {
+-        return true;
++        throw new Error("Official web Cookie update payload is invalid");
+       }
+       webCookieHeader = argument.value;
+       value = true;
+       break;
+     }
+     case "setSsoCookieHeader": {
+       const argument = candidate.argumentList?.length === 1 ? candidate.argumentList[0] : undefined;
+       if (argument?.type !== "RAW" || typeof argument.value !== "string" || argument.value.trim() === "") {
+-        return true;
++        throw new Error("Official SSO Cookie update payload is invalid");
+       }
+       ssoCookieHeader = argument.value;
+       value = true;
+       break;
+     }
+     case "setOfficialHttpToken": {
+       const argument = candidate.argumentList?.length === 1 ? candidate.argumentList[0] : undefined;
+       if (argument?.type !== "RAW" || typeof argument.value !== "string" || argument.value.trim() === "") {
+-        return true;
++        throw new Error("Official HTTP token update payload is invalid");
+       }
+       officialHttpToken = argument.value;
+       value = true;
+       break;
+     }
+     case "beginCaptureOnly":
+       networkBoundary.beginCaptureOnly();
+       value = true;
+       break;
+     case "drainCapturedRequests":
+diff --git a/src/runtime/protocol.ts b/src/runtime/protocol.ts
+index b616c15..b9394be 100644
+--- a/src/runtime/protocol.ts
++++ b/src/runtime/protocol.ts
+@@ -2,23 +2,41 @@ import type { ErrorCode } from "../errors.js";
+ import type { SessionExport } from "../session/types.js";
+ import type { ChatInput, EncryptedContent, PhotoSnapInput } from "./content-types.js";
+ import type { FriendSnapshot } from "../friends/types.js";
+ 
+ export interface SerializedAppError {
+   readonly code: ErrorCode;
+   readonly message: string;
+   readonly details: Readonly<Record<string, unknown>>;
+ }
+ 
++export interface RuntimeAuthUpdate {
++  readonly accountId: string;
++  readonly httpToken: string;
++  readonly cookieHeader: string;
++  readonly ssoCookieHeader: string;
++  readonly mcsCofSequenceIds: string;
++}
++
++export function toRuntimeAuthUpdate(session: SessionExport): RuntimeAuthUpdate {
++  return {
++    accountId: session.accountId,
++    httpToken: session.auth.httpToken,
++    cookieHeader: session.auth.cookieHeader,
++    ssoCookieHeader: session.auth.ssoCookieHeader ?? session.auth.cookieHeader,
++    mcsCofSequenceIds: session.auth.requestHeaders["mcs-cof-ids-bin"] ?? "",
++  };
++}
++
+ export type RuntimeCommand =
+   | { readonly method: "initialize"; readonly session: SessionExport }
+-  | { readonly method: "updateAuth"; readonly session: SessionExport }
++  | { readonly method: "updateAuth"; readonly auth: RuntimeAuthUpdate }
+   | { readonly method: "encryptChat"; readonly input: ChatInput }
+   | { readonly method: "decryptChat"; readonly input: EncryptedContent }
+   | { readonly method: "createPhotoSnap"; readonly input: PhotoSnapInput }
+   | { readonly method: "refreshAuth" }
+   | { readonly method: "exportState" }
+   | { readonly method: "syncMessages" }
+   | { readonly method: "syncFriends" }
+   | { readonly method: "drainChatMessages" }
+   | { readonly method: "drainSnapMessages" }
+   | { readonly method: "shutdown" };
+diff --git a/src/runtime/worker-client.ts b/src/runtime/worker-client.ts
+index c8de539..45eeb40 100644
+--- a/src/runtime/worker-client.ts
++++ b/src/runtime/worker-client.ts
+@@ -5,21 +5,21 @@ import type { FriendSnapshot } from "../friends/types.js";
+ import type {
+   AuthRefreshResult,
+   ChatInput,
+   ChatMessage,
+   CryptoStateExport,
+   EncryptedContent,
+   IncomingSnap,
+   PhotoSnapInput,
+   RuntimeStatus,
+ } from "./content-types.js";
+-import type { RuntimeCommand, RuntimeRequest, RuntimeResponse, SerializedAppError } from "./protocol.js";
++import { toRuntimeAuthUpdate, type RuntimeCommand, type RuntimeRequest, type RuntimeResponse, type SerializedAppError } from "./protocol.js";
+ 
+ export interface ContentRuntimeClientOptions {
+   readonly workerUrl?: URL;
+   readonly timeoutMs?: number;
+   readonly assetDir?: string;
+   readonly allowNetwork?: boolean;
+ }
+ 
+ interface PendingRequest {
+   readonly resolve: (value: unknown) => void;
+@@ -116,21 +116,21 @@ export class ContentRuntimeClient {
+       const message = { id, ...request } as RuntimeRequest;
+       this.worker.postMessage(message, transferList);
+     });
+   }
+ 
+   initialize(session: SessionExport): Promise<RuntimeStatus> {
+     return this.call({ method: "initialize", session });
+   }
+ 
+   updateAuth(session: SessionExport): Promise<void> {
+-    return this.call({ method: "updateAuth", session });
++    return this.call({ method: "updateAuth", auth: toRuntimeAuthUpdate(session) });
+   }
+ 
+   encryptChat(input: ChatInput): Promise<EncryptedContent> {
+     return this.call({ method: "encryptChat", input });
+   }
+ 
+   decryptChat(input: EncryptedContent): Promise<ChatMessage> {
+     return this.call({ method: "decryptChat", input }, [input.bytes.buffer as ArrayBuffer]);
+   }
+ 
+diff --git a/src/runtime/worker-entry.ts b/src/runtime/worker-entry.ts
+index 941a68c..55df970 100644
+--- a/src/runtime/worker-entry.ts
++++ b/src/runtime/worker-entry.ts
+@@ -311,21 +311,21 @@ async function exportRuntimeState(): Promise<CryptoStateExport> {
+ }
+ 
+ async function dispatch(request: RuntimeRequest): Promise<unknown> {
+   switch (request.method) {
+     case "initialize":
+       return initialize(request);
+     case "updateAuth":
+       if (officialRuntime === undefined) {
+         throw new AppError("CRYPTO_RUNTIME_FAILED", "Content runtime is not initialized");
+       }
+-      await officialRuntime.updateAuth(parseSessionExport(request.session));
++      await officialRuntime.updateAuth(request.auth);
+       return undefined;
+     case "encryptChat":
+       if (officialRuntime === undefined || officialConversationManager === undefined) {
+         throw new AppError(
+           "SESSION_REEXPORT_REQUIRED",
+           "Session export is missing login-time messaging key initialization state",
+         );
+       }
+       return captureOfficialChatEnvelope(
+         officialRuntime,
+diff --git a/tests/fixtures/runtime-worker.ts b/tests/fixtures/runtime-worker.ts
+index 798feb8..539243a 100644
+--- a/tests/fixtures/runtime-worker.ts
++++ b/tests/fixtures/runtime-worker.ts
+@@ -52,20 +52,29 @@ parentPort.on("message", (request: Record<string, unknown>) => {
+   }
+   if (request.method === "refreshAuth") {
+     parentPort.postMessage({
+       id,
+       ok: false,
+       error: { code: "SESSION_REEXPORT_REQUIRED", message: "refresh unavailable", details: { safe: true } },
+     });
+     return;
+   }
+   if (request.method === "updateAuth") {
++    const auth = request.auth as Record<string, unknown> | undefined;
++    if (auth === undefined || "session" in request || "messaging" in auth || "localStorage" in auth || "indexedDb" in auth) {
++      parentPort.postMessage({
++        id,
++        ok: false,
++        error: { code: "WORKER_PROTOCOL_ERROR", message: "auth-only update payload required", details: {} },
++      });
++      return;
++    }
+     authUpdated = true;
+     parentPort.postMessage({ id, ok: true, value: undefined });
+     return;
+   }
+   if (request.method === "syncFriends") {
+     parentPort.postMessage({
+       id,
+       ok: true,
+       value: {
+         syncedAt: authUpdated ? "2026-08-12T00:00:00.000Z" : "2026-08-10T00:00:00.000Z",
+diff --git a/tests/runtime/official-messaging-session.test.ts b/tests/runtime/official-messaging-session.test.ts
+index 77ecbce..6d8f720 100644
+--- a/tests/runtime/official-messaging-session.test.ts
++++ b/tests/runtime/official-messaging-session.test.ts
+@@ -1,12 +1,13 @@
+ import { describe, expect, it, vi } from "vitest";
+ import { OfficialWorkerClient } from "../../src/runtime/official-worker-client.js";
++import { toRuntimeAuthUpdate } from "../../src/runtime/protocol.js";
+ import type { SessionExport } from "../../src/session/types.js";
+ 
+ function session(): SessionExport {
+   return {
+     formatVersion: 1,
+     accountId: "11111111-1111-4111-8111-111111111111",
+     buildId: "8dd50222",
+     exportedAt: "2026-08-10T00:00:00.000Z",
+     auth: {
+       httpToken: "test-token",
+@@ -43,21 +44,21 @@ function refreshedSession(): SessionExport {
+ }
+ 
+ describe("official messaging session", () => {
+   it("updates in-memory auth for the next read-only official operation", async () => {
+     const client = new OfficialWorkerClient({
+       assetDir: ".",
+       workerUrl: new URL("../fixtures/official-session-contract-worker.mjs", import.meta.url),
+     });
+     try {
+       await client.initializeWasm(session());
+-      await client.updateAuth(refreshedSession());
++      await client.updateAuth(toRuntimeAuthUpdate(refreshedSession()));
+       await expect(client.syncFriends()).resolves.toEqual({
+         syncedAt: "2026-08-12T00:00:00.000Z",
+         status: "success",
+         friends: [],
+         incomingRequests: [],
+       });
+     } finally {
+       await client.shutdown();
+     }
+   });
+

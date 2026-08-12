@@ -2,6 +2,49 @@ import { describe, expect, it, vi } from "vitest";
 import { createOfficialNetworkBoundary } from "../../src/runtime/official-network.js";
 
 describe("official capture-only network boundary", () => {
+  it("injects the web cookie only for exact read-only web paths", async () => {
+    const calls: Array<{ readonly url: string; readonly method: string; readonly cookie: string | null }> = [];
+    const boundary = createOfficialNetworkBoundary(
+      true,
+      async (input, init) => {
+        const request = new Request(input, init);
+        calls.push({ url: request.url, method: request.method, cookie: request.headers.get("cookie") });
+        return new Response(null, { status: 200 });
+      },
+      { webCookieHeader: () => "cookie-sentinel" },
+    );
+
+    await boundary.fetch("https://web.snapchat.com/messagingcoreservice.MessagingCoreService/DeltaSync", {
+      method: "POST",
+    });
+    await boundary.fetch("https://web.snapchat.com/messagingcoreservice.MessagingCoreService/GetGroups", {
+      method: "POST",
+    });
+    await boundary.fetch("https://web.snapchat.com/messagingcoreservice.MessagingCoreService/CreateContentMessage", {
+      method: "POST",
+    });
+    await boundary.fetch("https://accounts.snapchat.com/messagingcoreservice.MessagingCoreService/DeltaSync", {
+      method: "POST",
+    });
+    await boundary.fetch("https://web.snapchat.com/messagingcoreservice.MessagingCoreService/DeltaSync", {
+      method: "GET",
+    });
+    await boundary.fetch("https://web.snapchat.com/messagingcoreservice.MessagingCoreService/DeltaSync", {
+      method: "POST",
+      headers: { cookie: "existing-cookie" },
+    });
+
+    expect(calls.map(({ method, cookie }) => ({ method, cookie }))).toEqual([
+      { method: "POST", cookie: "cookie-sentinel" },
+      { method: "POST", cookie: "cookie-sentinel" },
+      { method: "POST", cookie: null },
+      { method: "POST", cookie: null },
+      { method: "GET", cookie: null },
+      { method: "POST", cookie: "existing-cookie" },
+    ]);
+    expect(JSON.stringify(boundary.drainObservedRequests())).not.toContain("cookie-sentinel");
+  });
+
   it("records only safe path and status metadata for normal network requests", async () => {
     const boundary = createOfficialNetworkBoundary(true, async () =>
       new Response(null, { status: 401 }));
@@ -71,6 +114,25 @@ describe("official capture-only network boundary", () => {
     expect(networkFetch).toHaveBeenCalledWith(request, undefined);
   });
 
+  it("keeps an existing body usable when injecting the web cookie", async () => {
+    const networkFetch = vi.fn(async (input: string | URL | Request, init?: RequestInit) => {
+      const actual = new Request(input, init);
+      expect(actual.headers.get("cookie")).toBe("cookie-sentinel");
+      expect([...new Uint8Array(await actual.arrayBuffer())]).toEqual([1, 2, 3]);
+      return new Response(null, { status: 200 });
+    });
+    const boundary = createOfficialNetworkBoundary(true, networkFetch, {
+      webCookieHeader: () => "cookie-sentinel",
+    });
+    const request = new Request("https://web.snapchat.com/api/158/envelope/", {
+      method: "POST",
+      body: new Uint8Array([1, 2, 3]),
+    });
+
+    await expect(boundary.fetch(request)).resolves.toMatchObject({ status: 200 });
+    expect(request.bodyUsed).toBe(false);
+  });
+
   it("classifies the remaining safe transport failure categories", async () => {
     const cases = [
       [new TypeError("Body is unusable"), "request-body-unusable", undefined],
@@ -132,8 +194,14 @@ describe("official capture-only network boundary", () => {
 
   it("passes through only allowlisted read-only synchronization during capture", async () => {
     const response = new Response(new Uint8Array([0, 0, 0, 0, 0]), { status: 200 });
-    const networkFetch = vi.fn(async () => response);
-    const boundary = createOfficialNetworkBoundary(true, networkFetch);
+    const networkFetch = vi.fn(async (input: string | URL | Request, init?: RequestInit) => {
+      const request = new Request(input, init);
+      expect(request.headers.get("cookie")).toBe("cookie-sentinel");
+      return response;
+    });
+    const boundary = createOfficialNetworkBoundary(true, networkFetch, {
+      webCookieHeader: () => "cookie-sentinel",
+    });
     boundary.beginCaptureOnly();
 
     await expect(boundary.fetch(

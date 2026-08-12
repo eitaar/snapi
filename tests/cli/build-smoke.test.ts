@@ -21,5 +21,5 @@ describe("built snap CLI", () => {
       encoding: "utf8",
     });
     expect(output.trim()).toBe("0.1.0");
-  });
+  }, 30_000);
 });

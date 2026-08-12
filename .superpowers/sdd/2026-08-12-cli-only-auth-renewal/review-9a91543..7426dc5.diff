@@ -1,0 +1,973 @@
+# Review package: 9a91543..7426dc5
+
+## Commits and diff
+Exit code: 0
+Wall time: 0.7 seconds
+Total output lines: 1384
+Output:
+7426dc5 feat: make CLI auth renewal capability-aware
+ src/auth/brave-cookies.ts                | 231 +++++++++++++++++++
+ src/auth/dbsc.ts                         | 385 +++++++++++++++++++++++++++++++
+ src/client.ts                            |  84 ++++++-
+ src/transport/sso-auth-refresh.ts        |  77 +++++--
+ tests/auth/brave-cookies.test.ts         | 103 +++++++++
+ tests/auth/dbsc.test.ts                  |  99 ++++++++
+ tests/transport/sso-auth-refresh.test.ts | 104 +++++++++
+ 7 files changed, 1064 insertions(+), 19 deletions(-)
+diff --git a/src/auth/brave-cookies.ts b/src/auth/brave-cookies.ts
+new file mode 100644
+index 0000000..387d5d3
+--- /dev/null
++++ b/src/auth/brave-cookies.ts
+@@ -0,0 +1,231 @@
++import { createDecipheriv } from "node:crypto";
++import { readFile } from "node:fs/promises";
++import { spawn } from "node:child_process";
++import { DatabaseSync } from "node:sqlite";
++import { dirname, join } from "node:path";
++import { AppError } from "../errors.js";
++import { resolveBraveProfileDir } from "./dbsc.js";
++
++const ACCOUNTS_HOST = "accounts.snapchat.com";
++const COOKIE_DOMAINS = ["accounts.snapchat.com", ".accounts.snapchat.com", ".snapchat.com"] as const;
++const POWERSHELL_ENV = "SNAP_POWERSHELL";
++
++export interface BraveCookieRecord {
++  readonly hostKey: string;
++  readonly name: string;
++  readonly value: string;
++  readonly encryptedValue: Uint8Array;
++  readonly path: string;
++}
++
++export interface BraveCookieDependencies {
++  readonly unprotect?: (value: Uint8Array) => Promise<Uint8Array>;
++}
++
++function domainRank(hostKey: string): number {
++  const normalized = hostKey.toLowerCase().replace(/^\./, "");
++  if (normalized !== ACCOUNTS_HOST && normalized !== "snapchat.com") return Number.POSITIVE_INFINITY;
++  if (normalized === ACCOUNTS_HOST && !hostKey.startsWith(".")) return 0;
++  if (normalized === ACCOUNTS_HOST) return 1;
++  return 2;
++}
++
++export function buildBraveCookieHeader(records: readonly BraveCookieRecord[]): string {
++  const selected = new Map<string, { readonly record: BraveCookieRecord; readonly index: number }>();
++  records
++    .map((record, index) => ({ record, index }))
++    .filter(({ record }) => domainRank(record.hostKey) !== Number.POSITIVE_INFINITY && record.value !== "")
++    .sort((left, right) => {
++      const rankDifference = domainRank(left.record.hostKey) - domainRank(right.record.hostKey);
++      if (rankDifference !== 0) return rankDifference;
++      const pathDifference = right.record.path.length - left.record.path.length;
++      return pathDifference !== 0 ? pathDifference : left.index - right.index;
++    })
++    .forEach((entry) => {
++      if (!selected.has(entry.record.name)) selected.set(entry.record.name, entry);
++    });
++  return [...selected.values()].map(({ record }) => `${record.name}=${record.value}`).join("; ");
++}
++
++export function decryptChromiumCookieValue(encryptedValue: Uint8Array, masterKey: Uint8Array): string {
++  const prefix = Buffer.from(encryptedValue.subarray(0, 3)).toString("ascii");
++  if (prefix === "v20") {
++    throw new AppError(
++      "AUTH_CONTEXT_UNAVAILABLE",
++      "Brave v20 cookies require the Brave browser context for App-Bound decryption",
++    );
++  }
++  if (prefix !== "v10" && prefix !== "v11") {
++    throw new AppError("AUTH_CONTEXT_UNAVAILABLE", "Brave cookie uses an unsupported encryption format");
++  }
++  if (encryptedValue.byteLength < 3 + 12 + 16) {
++    throw new AppError("AUTH_CONTEXT_UNAVAILABLE", "Brave cookie ciphertext is truncated");
++  }
++  try {
++    const nonce = encryptedValue.subarray(3, 15);
++    const body = encryptedValue.subarray(15, -16);
++    const tag = encryptedValue.subarray(-16);
++    const decipher = createDecipheriv("aes-256-gcm", masterKey, nonce);
++    decipher.setAuthTag(tag);
++    return Buffer.concat([decipher.update(body), decipher.final()]).toString("utf8");
++  } catch (error) {
++    throw new AppError("AUTH_CONTEXT_UNAVAILABLE", "Unable to decrypt a Brave cookie", {
++      errorName: error instanceof Error ? error.name : "UnknownError",
++    });
++  }
++}
++
++function parseBase64(value: string, description: string): Uint8Array {
++  try {
++    const bytes = Uint8Array.from(Buffer.from(value, "base64"));
++    if (bytes.byteLength === 0) throw new Error("empty");
++    return bytes;
++  } catch (error) {
++    throw new AppError("AUTH_CONTEXT_UNAVAILABLE", `Brave ${description} is malformed`, {
++      errorName: error instanceof Error ? error.name : "UnknownError",
++    });
++  }
++}
++
++interface PowerShellResult {
++  readonly stdout: string;
++  readonly code: number;
++}
++
++function runPowerShell(script: string, input: string): Promise<PowerShellResult> {
++  const encodedCommand = Buffer.from(script, "utf16le").toString("base64");
++  const executable = process.env[POWERSHELL_ENV]?.trim() || "powershell.exe";
++  return new Promise((resolve, reject) => {
++    const child = spawn(executable, ["-NoLogo", "-NoProfile", "-NonInteractive", "-EncodedCommand", encodedCommand], {
++      stdio: ["pipe", "pipe", "ignore"],
++      windowsHide: true,
++    });
++    let stdout = "";
++    child.stdout.setEncoding("utf8");
++    child.stdout.on("data", (chunk: string) => { stdout += chunk; });
++    child.once("error", reject);
++    child.once("close", (code) => resolve({ stdout, code: code ?? -1 }));
++    child.stdin.end(input);
++  });
++}
++
++const DPAPI_SCRIPT = String.raw`
++$encoded = [Console]::In.ReadToEnd().Trim()
++Add-Type -AssemblyName System.Security
++$encrypted = [Convert]::FromBase64String($encoded)
++$plain = [System.Security.Cryptography.ProtectedData]::Unprotect($encrypted, $null, [System.Security.Cryptography.DataProtectionScope]::CurrentUser)
++[Console]::WriteLine([Convert]::ToBase64String($plain))
++`;
++
++async function unprotectDpapi(value: Uint8Array): Promise<Uint8Array> {
++  if (process.platform !== "win32") {
++    throw new AppError("AUTH_CONTEXT_UNAVAILABLE", "Brave cookie decryption requires Windows DPAPI");
++  }
++  let result: PowerShellResult;
++  try {
++    result = await runPowerShell(DPAPI_SCRIPT, Buffer.from(value).toString("base64"));
++  } catch (error) {
++    throw new AppError("AUTH_CONTEXT_UNAVAILABLE", "Windows PowerShell is unavailable for Brave cookie decryption", {
++      errorName: error instanceof Error ? error.name : "UnknownError",
++    });
++  }
++  if (result.code !== 0) {
++    throw new AppError("AUTH_CONTEXT_UNAVAILABLE", "Windows DPAPI could not decrypt the Brave cookie key", {
++      exitCode: result.code,
++    });
++  }
++  return parseBase64(result.stdout.trim(), "DPAPI result");
++}
++
++function jsonString(root: unknown, path: readonly string[]): string {
++  let current: unknown = root;
++  for (const key of path) {
++    if (typeof current !== "object" || current === null) throw new AppError("AUTH_CONTEXT_UNAVAILABLE", "Brave Local State is incomplete");
++    current = (current as Record<string, unknown>)[key];
++  }
++  if (typeof current !== "string" || current.trim() === "") throw new AppError("AUTH_CONTEXT_UNAVAILABLE", "Brave Local State is incomplete");
++  return current;
++}
++
++async function readMasterKey(profileDir: string, unprotect: (value: Uint8Array) => Promise<Uint8Array>): Promise<Uint8Array> {
++  const localStatePath = join(dirname(profileDir), "Local State");
++  try {
++    const localState = JSON.parse(await readFile(localStatePath, "utf8")) as unknown;
++    const encrypted = parseBase64(jsonString(localState, ["os_crypt", "encrypted_key"]), "encrypted key");
++    if (Buffer.from(encrypted.subarray(0, 5)).toString("ascii") !== "DPAPI") {
++      throw new AppError("AUTH_CONTEXT_UNAVAILABLE", "Brave Local State uses an unsupported key wrapper");
++    }
++    return unprotect(encrypted.subarray(5));
++  } catch (error) {
++    if (error instanceof AppError) throw error;
++    throw new AppError("AUTH_CONTEXT_UNAVAILABLE", "Unable to read Brave Local State", {
++      errorName: error instanceof Error ? error.name : "UnknownError",
++    });
++  }
++}
++
++function rowBytes(value: unknown): Uint8Array {
++  if (value instanceof Uint8Array) return new Uint8Array(value);
++  if (value instanceof ArrayBuffer) return new Uint8Array(value);
++  throw new AppError("AUTH_CONTEXT_UNAVAILABLE", "Brave cookie ciphertext is unavailable");
++}
++
++export async function readBraveCookieHeader(
++  profileDir = resolveBraveProfileDir(),
++  dependencies: BraveCookieDependencies = {},
++): Promise<string> {
++  const unprotect = dependencies.unprotect ?? unprotectDpapi;
++  const cookiesPath = join(profileDir, "Network", "Cookies");
++  let database: DatabaseSync;
++  try {
++    database = new DatabaseSync(cookiesPath, { readOnly: true });
++  } catch (error) {
++    throw new AppError("AUTH_CONTEXT_UNAVAILABLE", "Unable to open Brave's cookie store; close Brave and retry", {
++      errorName: error instanceof Error ? error.name : "UnknownError",
++    });
++  }
++  try {
++    const placeholders = COOKIE_DOMAINS.map(() => "?").join(", ");
++    const rows = database.prepare(`SELECT host_key AS hostKey, name, value, encrypted_value AS encryptedValue, path FROM cookies WHERE host_key IN (${placeholders})`).all(...COOKIE_DOMAINS) as readonly Record<string, unknown>[];
++    let masterKey: Uint8Array | undefined;
++    const records: BraveCookieRecord[] = [];
++    for (const row of rows) {
++      const hostKey = typeof row.hostKey === "string" ? row.hostKey : "";
++      const name = typeof row.name === "string" ? row.name : "";
++      const path = typeof row.path === "string" ? row.path : "/";
++      if (hostKey === "" || name === "") continue;
++      const plaintext = typeof row.value === "string" ? row.value : "";
++      const encryptedValue = rowBytes(row.encryptedValue);
++      let value = plaintext;
++      if (value === "" && encryptedValue.byteLength > 0) {
++        const prefix = Buffer.from(encryptedValue.subarray(0, 3)).toString("ascii");
++        if (prefix === "v20") {
++          throw new AppError(
++            "AUTH_CONTEXT_UNAVAILABLE",
++            "Brave v20 cookies require the Brave browser context for App-Bound decryption",
++          );
++        }
++        value = prefix === "v10" || prefix === "v11"
++          ? decryptChromiumCookieValue(
++              encryptedValue,
++              (masterKey ??= await readMasterKey(profileDir, unprotect)),
++            )
++          : new TextDecoder().decode(await unprotect(encryptedValue));
++      }
++      records.push({ hostKey, name, value, encryptedValue, path });
++    }
++    const header = buildBraveCookieHeader(records);
++    const names = new Set(header.split(";").map((part) => part.trim().split("=", 1)[0]));
++    if (!names.has("sc-a-dbsc-session") || !names.has("__Host-sc-a-auth-session")) {
++      throw new AppError("AUTH_CONTEXT_UNAVAILABLE", "Brave cookie store has no current Snapchat auth session");
++    }
++    return header;
++  } catch (error) {
++    if (error instanceof AppError) throw error;
++    throw new AppError("AUTH_CONTEXT_UNAVAILABLE", "Unable to read Brave's cookie store", {
++      errorName: error instanceof Error ? error.name : "UnknownError",
++    });
++  } finally {
++    database.close();
++  }
++}
+diff --git a/src/auth/dbsc.ts b/src/auth/dbsc.ts
+new file mode 100644
+index 0000000..745f553
+--- /dev/null
++++ b/src/auth/dbsc.ts
+@@ -0,0 +1,385 @@
++import { spawn } from "node:child_process";
++import { DatabaseSync } from "node:sqlite";
++import { join } from "node:path";
++import { AppError } from "../errors.js";
++
++const DBSC_SITE_KEY = "https://snapchat.com";
++const DEFAULT_REFRESH_URL = "https://accounts.snapchat.com/accounts/dbsc/refresh";
++const BRAVE_PROFILE_ENV = "SNAP_BRAVE_PROFILE_DIR";
++const POWERSHELL_ENV = "SNAP_POWERSHELL";
++
++export interface StoredDbscSession {
++  readonly sessionId: string;
++  readonly refreshUrl: string;
++  readonly wrappedKey: Uint8Array;
++}
++
++export type DbscAlgorithm = "RS256" | "ES256";
++
++export interface DbscSigner {
++  readonly algorithm: DbscAlgorithm;
++  readonly sign: (input: Uint8Array) => Promise<Uint8Array>;
++}
++
++export interface DbscRefreshResult {
++  readonly cookieHeader: string;
++}
++
++export interface DbscRefreshDependencies {
++  readonly fetch?: typeof globalThis.fetch;
++  readonly profileDir?: string;
++  readonly openSession?: () => Promise<StoredDbscSession>;
++  readonly createSigner?: (wrappedKey: Uint8Array) => Promise<DbscSigner>;
++}
++
++interface WireField {
++  readonly number: number;
++  readonly wireType: number;
++  readonly bytes?: Uint8Array;
++}
++
++function readVarint(buffer: Uint8Array, offset: number): { readonly value: number; readonly offset: number } {
++  let value = 0n;
++  let shift = 0n;
++  let cursor = offset;
++  while (cursor < buffer.length && shift <= 63n) {
++    const byte = buffer[cursor]!;
++    cursor += 1;
++    value |= BigInt(byte & 0x7f) << shift;
++    if ((byte & 0x80) === 0) return { value: Number(value), offset: cursor };
++    shift += 7n;
++  }
++  throw new AppError("AUTH_CONTEXT_UNAVAILABLE", "Chromium DBSC protobuf is malformed");
++}
++
++function readFields(buffer: Uint8Array): readonly WireField[] {
++  const fields: WireField[] = [];
++  let offset = 0;
++  while (offset < buffer.length) {
++    const tag = readVarint(buffer, offset);
++    offset = tag.offset;
++    const wireType = tag.value & 7;
++    const number = tag.value >>> 3;
++    if (wireType === 2) {
++      const length = readVarint(buffer, offset);
++      offset = length.offset;
++      const end = offset + length.value;
++      if (end > buffer.length) throw new AppError("AUTH_CONTEXT_UNAVAILABLE", "Chromium DBSC protobuf is truncated");
++      fields.push({ number, wireType, bytes: buffer.slice(offset, end) });
++      offset = end;
++      continue;
++    }
++    if (wireType === 0) {
++      offset = readVarint(buffer, offset).offset;
++      fields.push({ number, wireType });
++      continue;
++    }
++    if (wireType === 1) {
++      offset += 8;
++      if (offset > buffer.length) throw new AppError("AUTH_CONTEXT_UNAVAILABLE", "Chromium DBSC protobuf is truncated");
++      fields.push({ number, wireType });
++      continue;
++    }
++    if (wireType === 5) {
++      offset += 4;
++      if (offset > buffer.length) throw new AppError("AUTH_CONTEXT_UNAVAILABLE", "Chromium DBSC protobuf is truncated");
++      fields.push({ number, wireType });
++      continue;
++    }
++    throw new AppError("AUTH_CONTEXT_UNAVAILABLE", "Chromium DBSC protobuf uses an unsupported wire type");
++  }
++  return fields;
++}
++
++function bytesField(fields: readonly WireField[], number: number): Uint8Array | undefined {
++  return fields.find((field) => field.number === number && field.wireType === 2)?.bytes;
++}
++
++function requiredBytesField(fields: readonly WireField[], number: number): Uint8Array {
++  const value = bytesField(fields, number);
++  if (value === undefined) throw new AppError("AUTH_CONTEXT_UNAVAILABLE", "Chromium DBSC session is incomplete");
++  return value;
++}
++
++function utf8(bytes: Uint8Array | undefined): string {
++  if (bytes === undefined) throw new AppError("AUTH_CONTEXT_UNAVAILABLE", "Chromium DBSC session is incomplete");
++  const value = new TextDecoder().decode(bytes);
++  if (value.trim() === "" || value.includes("\uFFFD")) {
++    throw new AppError("AUTH_CONTEXT_UNAVAILABLE", "Chromium DBSC session contains invalid text");
++  }
++  return value;
++}
++
++export function parseDbscSessionProto(proto: Uint8Array): StoredDbscSession {
++  const outer = requiredBytesField(readFields(proto), 1);
++  const record = readFields(outer);
++  const sessionId = utf8(bytesField(record, 1));
++  const state = readFields(requiredBytesField(record, 2));
++  const refreshUrl = utf8(bytesField(state, 2));
++  if (refreshUrl !== DEFAULT_REFRESH_URL) {
++    throw new AppError("AUTH_CONTEXT_UNAVAILABLE", "Chromium DBSC session uses an unsupported refresh endpoint");
++  }
++  const wrappedKey = bytesField(state, 5);
++  if (wrappedKey === undefined || wrappedKey.byteLength === 0) {
++    throw new AppError("AUTH_CONTEXT_UNAVAILABLE", "Chromium DBSC session has no wrapped key");
++  }
++  return {
++    sessionId,
++    refreshUrl: refreshUrl || DEFAULT_REFRESH_URL,
++    wrappedKey: wrappedKey.slice(),
++  };
++}
++
++export function parseDbscChallenge(value: string): string {
++  const match = /^"([^"\\]*)";id="[^"\\]*"$/.exec(value.trim());
++  if (match?.[1] === undefined || match[1] === "") {
++    throw new AppError("AUTH_CONTEXT_UNAVAILABLE", "Snapchat returned an unsupported DBSC challenge");
++  }
++  return match[1];
++}
++
++export function resolveOptionalBraveProfileDir(env: NodeJS.ProcessEnv = process.env): string | undefined {
++  const configured = env[BRAVE_PROFILE_ENV]?.trim();
++  if (configured !== undefined && configured !== "") return configured;
++  const localAppData = env.LOCALAPPDATA;
++  if (localAppData === undefined || localAppData.trim() === "") return undefined;
++  return join(localAppData, "BraveSoftware", "Brave-Browser", "User Data", "Default");
++}
++
++export function resolveBraveProfileDir(env: NodeJS.ProcessEnv = process.env): string {
++  const profileDir = resolveOptionalBraveProfileDir(env);
++  if (profileDir !== undefined) return profileDir;
++  throw new AppError("AUTH_CONTEXT_UNAVAILABLE", "Brave DBSC profile directory is unavailable");
++}
++
++export async function openBraveDbscSession(profileDir = resolveBraveProfileDir()): Promise<StoredDbscSession> {
++  const path = join(profileDir, "Network", "Device Bound Sessions");
++  try {
++    const database = new DatabaseSync(path, { readOnly: true });
++    try {
++      const row = database.prepare("SELECT proto FROM dbsc_session_tbl WHERE key = ?").get(DBSC_SITE_KEY) as
++        | { readonly proto?: Uint8Array }
++        | undefined;
++      if (row?.proto === undefined) {
++        throw new AppError("AUTH_CONTEXT_UNAVAILABLE", "Brave has no Snapchat DBSC session");
++      }
++      return parseDbscSessionProto(new Uint8Array(row.proto));
++    } finally {
++      database.close();
++    }
++  } catch (error) {
++    if (error instanceof AppError) throw error;
++    throw new AppError("AUTH_CONTEXT_UNAVAILABLE", "Unable to read Brave's DBSC session store", {
++      errorName: error instanceof Error ? error.name : "UnknownError",
++    });
++  }
++}
++
++function base64Url(bytes: Uint8Array): string {
++  return Buffer.from(bytes).toString("base64url");
++}
++
++function mergeSetCookies(cookieHeader: string, headers: Headers): string {
++  const entries = new Map<string, string>();
++  for (const part of cookieHeader.split(";")) {
++    const trimmed = part.trim();
++    const separator = trimmed.indexOf("=");
++    if (separator > 0) entries.set(trimmed.slice(0, separator), trimmed.slice(separator + 1));
++  }
++  const getter = (headers as Headers & { getSetCookie?: () => string[] }).getSetCookie;
++  const combined = headers.get("set-cookie");
++  const setCookies = typeof getter === "function"
++    ? getter.call(headers)
++    : combined === null ? [] : [combined];
++  for (const setCookie of setCookies) {
++    const pair = setCookie.split(";", 1)[0]?.trim() ?? "";
++    const separator = pair.indexOf("=");
++    if (separator <= 0) continue;
++    const name = pair.slice(0, separator);
++    const value = pair.slice(separator + 1);
++    if (value === "") entries.delete(name);
++    else entries.set(name, value);
++  }
++  return [...entries].map(([name, value]) => `${name}=${value}`).join("; ");
++}
++
++function proofJwt(challenge: string, signer: DbscSigner): { readonly input: Uint8Array; readonly header: string; readonly payload: string } {
++  const header = base64Url(new TextEncoder().encode(JSON.stringify({ typ: "dbsc+jwt", alg: signer.algorithm })));
++  const payload = base64Url(new TextEncoder().encode(JSON.stringify({ jti: challenge })));
++  const signingInput = `${header}.${payload}`;
++  return { input: new TextEncoder().encode(signingInput), header, payload };
++}
++
++export async function refreshBraveDbsc(
++  cookieHeader: string,
++  dependencies: DbscRefreshDependencies = {},
++): Promise<DbscRefreshResult> {
++  const fetch = dependencies.fetch ?? globalThis.fetch;
++  const openSession = dependen…4853 tokens truncated…string) => Promise<{ readonly cookieHeader: string }>;
+ }
+ 
+ function cookieEntries(cookieHeader: string): Map<string, string> {
+   const entries = new Map<string, string>();
+   for (const part of cookieHeader.split(";")) {
+     const trimmed = part.trim();
+     const separator = trimmed.indexOf("=");
+     if (separator <= 0) continue;
+     entries.set(trimmed.slice(0, separator), trimmed.slice(separator + 1));
+   }
+@@ -34,60 +37,106 @@ function mergeSetCookies(cookieHeader: string, setCookies: readonly string[]): s
+   return [...entries].map(([name, value]) => `${name}=${value}`).join("; ");
+ }
+ 
+ function responseSetCookies(headers: Headers): readonly string[] {
+   const getter = (headers as Headers & { getSetCookie?: () => string[] }).getSetCookie;
+   if (typeof getter === "function") return getter.call(headers);
+   const combined = headers.get("set-cookie");
+   return combined === null ? [] : [combined];
+ }
+ 
++function redirectMetadata(response: Response): Readonly<Record<string, unknown>> {
++  const location = response.headers.get("location");
++  if (location === null) return { hasLocation: false };
++  try {
++    const url = new URL(location, SSO_URL);
++    return {
++      hasLocation: true,
++      locationOrigin: url.origin,
++      locationPath: url.pathname,
++      locationQueryKeys: [...new Set([...url.searchParams.keys()])].sort(),
++      locationHasCode: url.searchParams.has("code"),
++      locationHasError: url.searchParams.has("error"),
++    };
++  } catch {
++    return { hasLocation: true, locationInvalid: true };
++  }
++}
++
+ export async function refreshSnapchatSso(
+   session: SessionExport,
+   dependencies: SsoRefreshDependencies = {},
+ ): Promise<SessionExport> {
+   const fetch = dependencies.fetch ?? globalThis.fetch;
+-  const ssoCookieHeader = session.auth.ssoCookieHeader;
++  let ssoCookieHeader = session.auth.ssoCookieHeader;
+   const ssoScuid = session.auth.ssoScuid;
+-  if (ssoCookieHeader === undefined) {
++  if (ssoScuid === undefined) {
+     throw new AppError(
+       "SESSION_REEXPORT_REQUIRED",
+-      "Session export is missing the accounts-domain SSO cookie",
++      "Session export is missing the accounts-domain SSO client identifier",
+     );
+   }
+-  if (ssoScuid === undefined) {
++  if (ssoCookieHeader === undefined && dependencies.cookieSource !== undefined) {
++    ssoCookieHeader = await dependencies.cookieSource();
++  }
++  if (ssoCookieHeader === undefined) {
+     throw new AppError(
+       "SESSION_REEXPORT_REQUIRED",
+-      "Session export is missing the accounts-domain SSO client identifier",
++      "Session export is missing the accounts-domain SSO cookie",
+     );
+   }
++  if (dependencies.dbsc !== undefined) {
++    ssoCookieHeader = (await dependencies.dbsc(ssoCookieHeader)).cookieHeader;
++  }
++  const attestation = dependencies.attestation === undefined
++    ? undefined
++    : await dependencies.attestation(session);
++  const headers: Record<string, string> = {
++    accept: "*/*",
++    "cache-control": "no-cache",
++    cookie: ssoCookieHeader,
++    origin: "https://web.snapchat.com",
++    pragma: "no-cache",
++    referer: "https://web.snapchat.com/",
++    scuid: ssoScuid,
++  };
++  if (attestation !== undefined) headers["snap-att"] = attestation;
+   let response: Response;
+   try {
+     response = await fetch(SSO_URL, {
+       method: "POST",
+       body: null,
+-      headers: {
+-        accept: "*/*",
+-        "cache-control": "no-cache",
+-        cookie: ssoCookieHeader,
+-        origin: "https://web.snapchat.com",
+-        pragma: "no-cache",
+-        referer: "https://web.snapchat.com/",
+-        scuid: ssoScuid,
+-      },
++      redirect: "manual",
++      headers,
+     });
+   } catch (error) {
+     throw new AppError("SESSION_REEXPORT_REQUIRED", "Unable to refresh the exported Snapchat session", {
+       errorName: error instanceof Error ? error.name : "UnknownError",
+     });
+   }
+ 
++  if (
++    response.type === "opaqueredirect"
++    || (response.status >= 300 && response.status < 400)
++    || response.status === 403
++  ) {
++    throw new AppError(
++      "AUTH_CONTEXT_UNAVAILABLE",
++      "SSO refresh requires a browser-managed authentication context",
++      {
++        status: response.status,
++        hasAttestation: attestation !== undefined,
++        ...redirectMetadata(response),
++      },
++    );
++  }
++
+   if (!response.ok) {
+     throw new AppError("SESSION_REEXPORT_REQUIRED", "Exported Snapchat cookies can no longer refresh authentication", {
+       status: response.status,
+     });
+   }
+ 
+   const token = (await response.text()).trim();
+   if (!TOKEN_PATTERN.test(token)) {
+     throw new AppError("SESSION_REEXPORT_REQUIRED", "SSO refresh returned an invalid token");
+   }
+diff --git a/tests/auth/brave-cookies.test.ts b/tests/auth/brave-cookies.test.ts
+new file mode 100644
+index 0000000..35b10f2
+--- /dev/null
++++ b/tests/auth/brave-cookies.test.ts
+@@ -0,0 +1,103 @@
++import { createCipheriv, randomBytes } from "node:crypto";
++import { DatabaseSync } from "node:sqlite";
++import { mkdtemp, mkdir, rm, writeFile } from "node:fs/promises";
++import { tmpdir } from "node:os";
++import { join } from "node:path";
++import { describe, expect, it, vi } from "vitest";
++import {
++  buildBraveCookieHeader,
++  decryptChromiumCookieValue,
++  readBraveCookieHeader,
++  type BraveCookieRecord,
++} from "../../src/auth/brave-cookies.js";
++
++describe("Brave cookie auth", () => {
++  it("prefers the most specific domain when duplicate cookie names exist", () => {
++    const records: BraveCookieRecord[] = [
++      { hostKey: ".snapchat.com", name: "_sc-sid", value: "parent", encryptedValue: new Uint8Array(), path: "/" },
++      { hostKey: ".accounts.snapchat.com", name: "_sc-sid", value: "domain", encryptedValue: new Uint8Array(), path: "/" },
++      { hostKey: "accounts.snapchat.com", name: "_sc-sid", value: "host", encryptedValue: new Uint8Array(), path: "/" },
++      { hostKey: ".accounts.snapchat.com", name: "sc-a-dbsc-session", value: "dbsc", encryptedValue: new Uint8Array(), path: "/" },
++    ];
++
++    expect(buildBraveCookieHeader(records)).toBe("_sc-sid=host; sc-a-dbsc-session=dbsc");
++  });
++
++  it("decrypts Chromium v10 AES-GCM cookie values", () => {
++    const key = randomBytes(32);
++    const nonce = randomBytes(12);
++    const cipher = createCipheriv("aes-256-gcm", key, nonce);
++    const ciphertext = Buffer.concat([cipher.update("cookie-secret", "utf8"), cipher.final()]);
++    const stored = Buffer.concat([Buffer.from("v10"), nonce, ciphertext, cipher.getAuthTag()]);
++
++    expect(decryptChromiumCookieValue(stored, key)).toBe("cookie-secret");
++  });
++
++  it("fails closed for Chromium v20 App-Bound cookies", () => {
++    expect(() => decryptChromiumCookieValue(Buffer.from("v20app-bound"), randomBytes(32))).toThrow(
++      "Brave v20 cookies require the Brave browser context",
++    );
++  });
++
++  it("does not attempt v20 decryption from the Brave profile store", async () => {
++    const root = await mkdtemp(join(tmpdir(), "snaapi-brave-cookie-v20-"));
++    try {
++      const profileDir = join(root, "Default");
++      await mkdir(join(profileDir, "Network"), { recursive: true });
++
++      const database = new DatabaseSync(join(profileDir, "Network", "Cookies"));
++      database.exec("CREATE TABLE cookies (host_key TEXT, name TEXT, value TEXT, encrypted_value BLOB, path TEXT)");
++      const insert = database.prepare("INSERT INTO cookies (host_key, name, value, encrypted_value, path) VALUES (?, ?, ?, ?, ?)");
++      insert.run("accounts.snapchat.com", "__Host-sc-a-auth-session", "", Buffer.from("v20app-bound"), "/");
++      insert.run(".accounts.snapchat.com", "sc-a-dbsc-session", "dbsc", new Uint8Array(), "/");
++      database.close();
++
++      const unprotect = vi.fn(async () => randomBytes(32));
++
++      await expect(readBraveCookieHeader(profileDir, { unprotect })).rejects.toMatchObject({
++        code: "AUTH_CONTEXT_UNAVAILABLE",
++        message: "Brave v20 cookies require the Brave browser context for App-Bound decryption",
++      });
++      expect(unprotect).not.toHaveBeenCalled();
++    } finally {
++      await rm(root, { recursive: true, force: true });
++    }
++  });
++
++  it("reads and decrypts the current cookie store without persisting the key", async () => {
++    const root = await mkdtemp(join(tmpdir(), "snaapi-brave-cookie-"));
++    try {
++      const userDataDir = join(root, "User Data");
++      const profileDir = join(userDataDir, "Default");
++      await mkdir(join(profileDir, "Network"), { recursive: true });
++      const masterKey = randomBytes(32);
++      await writeFile(join(userDataDir, "Local State"), JSON.stringify({
++        os_crypt: { encrypted_key: Buffer.concat([Buffer.from("DPAPI"), Buffer.from("wrapped-key")]).toString("base64") },
++      }));
++
++      const database = new DatabaseSync(join(profileDir, "Network", "Cookies"));
++      database.exec("CREATE TABLE cookies (host_key TEXT, name TEXT, value TEXT, encrypted_value BLOB, path TEXT)");
++      const insert = database.prepare("INSERT INTO cookies (host_key, name, value, encrypted_value, path) VALUES (?, ?, ?, ?, ?)");
++      const encrypt = (value: string): Buffer => {
++        const nonce = randomBytes(12);
++        const cipher = createCipheriv("aes-256-gcm", masterKey, nonce);
++        const ciphertext = Buffer.concat([cipher.update(value, "utf8"), cipher.final()]);
++        return Buffer.concat([Buffer.from("v10"), nonce, ciphertext, cipher.getAuthTag()]);
++      };
++      insert.run("accounts.snapchat.com", "__Host-sc-a-auth-session", "", encrypt("auth"), "/");
++      insert.run(".accounts.snapchat.com", "sc-a-dbsc-session", "", encrypt("dbsc"), "/");
++      database.close();
++
++      const unprotect = vi.fn(async (value: Uint8Array) => {
++        expect(Buffer.from(value).toString("utf8")).toBe("wrapped-key");
++        return masterKey;
++      });
++      await expect(readBraveCookieHeader(profileDir, { unprotect })).resolves.toBe(
++        "__Host-sc-a-auth-session=auth; sc-a-dbsc-session=dbsc",
++      );
++      expect(unprotect).toHaveBeenCalledOnce();
++    } finally {
++      await rm(root, { recursive: true, force: true });
++    }
++  });
++});
+diff --git a/tests/auth/dbsc.test.ts b/tests/auth/dbsc.test.ts
+new file mode 100644
+index 0000000..0978b09
+--- /dev/null
++++ b/tests/auth/dbsc.test.ts
+@@ -0,0 +1,99 @@
++import { describe, expect, it, vi } from "vitest";
++import {
++  parseDbscChallenge,
++  parseDbscSessionProto,
++  refreshBraveDbsc,
++  resolveOptionalBraveProfileDir,
++  type DbscSigner,
++  type StoredDbscSession,
++} from "../../src/auth/dbsc.js";
++
++function varint(value: number): Uint8Array {
++  const bytes: number[] = [];
++  let current = value;
++  while (current >= 0x80) {
++    bytes.push((current & 0x7f) | 0x80);
++    current = Math.floor(current / 128);
++  }
++  bytes.push(current);
++  return Uint8Array.from(bytes);
++}
++
++function field(number: number, value: Uint8Array): Uint8Array {
++  const tag = varint(number << 3 | 2);
++  return Uint8Array.from([...tag, ...varint(value.length), ...value]);
++}
++
++function message(...fields: Uint8Array[]): Uint8Array {
++  return Uint8Array.from(fields.flatMap((value) => [...value]));
++}
++
++function storedSession(): StoredDbscSession {
++  return {
++    sessionId: "dbsc-session-id",
++    refreshUrl: "https://accounts.snapchat.com/accounts/dbsc/refresh",
++    wrappedKey: Uint8Array.from([1, 2, 3, 4]),
++  };
++}
++
++describe("DBSC auth", () => {
++  it("resolves the configured Brave profile directory without throwing when unavailable", () => {
++    expect(resolveOptionalBraveProfileDir({
++      SNAP_BRAVE_PROFILE_DIR: "C:\\Users\\eitab\\Brave\\Profile 7",
++    } as NodeJS.ProcessEnv)).toBe("C:\\Users\\eitab\\Brave\\Profile 7");
++
++    expect(resolveOptionalBraveProfileDir({
++      SNAP_BRAVE_PROFILE_DIR: "   ",
++      LOCALAPPDATA: "   ",
++    } as NodeJS.ProcessEnv)).toBeUndefined();
++  });
++
++  it("extracts the session id, refresh URL, and wrapped key from Chromium's protobuf row", () => {
++    const proto = message(field(1, message(
++      field(1, new TextEncoder().encode("dbsc-session-id")),
++      field(2, message(
++        field(2, new TextEncoder().encode("https://accounts.snapchat.com/accounts/dbsc/refresh")),
++        field(5, Uint8Array.from([1, 2, 3, 4])),
++      )),
++    )));
++
++    expect(parseDbscSessionProto(proto)).toEqual(storedSession());
++  });
++
++  it("extracts the challenge value from the structured DBSC challenge header", () => {
++    expect(parseDbscChallenge('"challenge-value";id="opaque-id"')).toBe("challenge-value");
++  });
++
++  it("signs the challenge, refreshes DBSC, and merges rotated cookies", async () => {
++    const signer: DbscSigner = {
++      algorithm: "RS256",
++      sign: vi.fn(async () => new Uint8Array(256).fill(7)),
++    };
++    const openSession = vi.fn(async () => storedSession());
++    const createSigner = vi.fn(async () => signer);
++    const fetch = vi.fn<typeof globalThis.fetch>()
++      .mockResolvedValueOnce(new Response(null, {
++        status: 403,
++        headers: { "secure-session-challenge": '"challenge-value";id="opaque-id"' },
++      }))
++      .mockResolvedValueOnce(new Response('{"continue":false}', {
++        status: 200,
++        headers: { "set-cookie": "rotated=value; Path=/" },
++      }));
++
++    const result = await refreshBraveDbsc("first=one", {
++      fetch,
++      openSession,
++      createSigner,
++    });
++
++    expect(result.cookieHeader).toBe("first=one; rotated=value");
++    expect(fetch).toHaveBeenCalledTimes(2);
++    const [, init] = fetch.mock.calls[1]!;
++    const headers = new Headers(init?.headers);
++    expect(headers.get("sec-secure-session-id")).toBe('"dbsc-session-id"');
++    expect(headers.get("secure-session-response")).toMatch(/^"[A-Za-z0-9_-]+\.[A-Za-z0-9_-]+\.[A-Za-z0-9_-]+"$/);
++    expect(headers.get("cookie")).toBe("first=one");
++    expect(signer.sign).toHaveBeenCalledOnce();
++  });
++});
+diff --git a/tests/transport/sso-auth-refresh.test.ts b/tests/transport/sso-auth-refresh.test.ts
+index d246554..1c707cb 100644
+--- a/tests/transport/sso-auth-refresh.test.ts
++++ b/tests/transport/sso-auth-refresh.test.ts
+@@ -33,20 +33,21 @@ describe("refreshSnapchatSso", () => {
+ 
+     const refreshed = await refreshSnapchatSso(session(), {
+       fetch,
+       now: () => new Date("2026-08-11T01:02:03.000Z"),
+     });
+ 
+     expect(fetch).toHaveBeenCalledOnce();
+     const [url, init] = fetch.mock.calls[0]!;
+     expect(String(url)).toBe("https://accounts.snapchat.com/accounts/sso?client_id=web-calling-corp--prod");
+     expect(init).toMatchObject({ method: "POST", body: null });
++    expect(init?.redirect).toBe("manual");
+     expect(new Headers(init?.headers).get("cookie")).toBe("first=one; session=old");
+     expect(new Headers(init?.headers).get("scuid")).toBe(session().auth.ssoScuid);
+     expect(refreshed).toMatchObject({
+       exportedAt: "2026-08-11T01:02:03.000Z",
+       auth: {
+         httpToken: token,
+         gatewayToken: token,
+         cookieHeader: "web=only",
+         ssoCookieHeader: "first=one; session=new; added=value",
+         requestHeaders: { "mcs-cof-ids-bin": "cof" },
+@@ -70,20 +71,123 @@ describe("refreshSnapchatSso", () => {
+ 
+   it("turns an unauthorized refresh into a safe re-export error", async () => {
+     const fetch = vi.fn(async () => new Response("denied-secret", { status: 401 }));
+ 
+     await expect(refreshSnapchatSso(session(), { fetch })).rejects.toMatchObject({
+       code: "SESSION_REEXPORT_REQUIRED",
+       details: { status: 401 },
+     });
+   });
+ 
++  it("adds standalone attestation and classifies a browser-bound redirect", async () => {
++    const fetch = vi.fn<(input: string | URL | Request, init?: RequestInit) => Promise<Response>>(async () => new Response(null, {
++      status: 303,
++      headers: { location: "/v2/login" },
++    }));
++    const attestation = vi.fn(async () => "standalone-proof");
++
++    await expect(refreshSnapchatSso(session(), { fetch, attestation })).rejects.toMatchObject({
++      code: "AUTH_CONTEXT_UNAVAILABLE",
++      details: {
++        status: 303,
++        hasAttestation: true,
++        locationOrigin: "https://accounts.snapchat.com",
++        locationPath: "/v2/login",
++        locationQueryKeys: [],
++        locationHasCode: false,
++        locationHasError: false,
++      },
++    });
++    const [, init] = fetch.mock.calls[0]!;
++    expect(new Headers(init?.headers).get("snap-att")).toBe("standalone-proof");
++    expect(init?.redirect).toBe("manual");
++  });
++
++  it("uses a DBSC-refreshed cookie for the SSO request", async () => {
++    const token = "c".repeat(292);
++    const fetch = vi.fn(async (_input: string | URL | Request, _init?: RequestInit) => new Response(token, {
++      status: 200,
++      headers: { scuid: session().accountId },
++    }));
++    const dbsc = vi.fn(async (cookieHeader: string) => ({
++      cookieHeader: `${cookieHeader}; dbsc-refreshed=yes`,
++    }));
++
++    await refreshSnapchatSso(session(), { fetch, dbsc });
++
++    expect(dbsc).toHaveBeenCalledWith("first=one; session=old");
++    const [, init] = fetch.mock.calls[0]!;
++    expect(new Headers(init?.headers).get("cookie")).toBe("first=one; session=old; dbsc-refreshed=yes");
++  });
++
++  it("uses an explicit SSO Cookie source before a profile source", async () => {
++    const events: string[] = [];
++    const token = "e".repeat(292);
++    const fetch = vi.fn(async () => {
++      events.push("fetch");
++      return new Response(token, {
++        status: 200,
++        headers: { scuid: session().accountId },
++      });
++    });
++    const cookieSource = vi.fn(async () => {
++      events.push("cookieSource");
++      return "live=session";
++    });
++    const dbsc = vi.fn(async (cookieHeader: string) => {
++      expect(cookieHeader).toBe(session().auth.ssoCookieHeader);
++      events.push("dbsc");
++      return { cookieHeader };
++    });
++
++    await refreshSnapchatSso(session(), { fetch, cookieSource, dbsc });
++
++    expect(cookieSource).not.toHaveBeenCalled();
++    expect(events).toEqual(["dbsc", "fetch"]);
++  });
++
++  it("uses the live browser cookie source before DBSC refresh", async () => {
++    const liveSession = session() as SessionExport & { auth: { ssoCookieHeader?: string } };
++    delete liveSession.auth.ssoCookieHeader;
++    const token = "d".repeat(292);
++    const fetch = vi.fn(async (_input: string | URL | Request, init?: RequestInit) => {
++      expect(new Headers(init?.headers).get("cookie")).toBe("live=session; sc-a-dbsc-session=current; dbsc-refreshed=yes");
++      return new Response(token, {
++        status: 200,
++        headers: { scuid: session().accountId },
++      });
++    });
++    const cookieSource = vi.fn(async () => "live=session; sc-a-dbsc-session=current");
++    const dbsc = vi.fn(async (cookieHeader: string) => ({
++      cookieHeader: `${cookieHeader}; dbsc-refreshed=yes`,
++    }));
++
++    await refreshSnapchatSso(liveSession, { fetch, cookieSource, dbsc });
++
++    expect(cookieSource).toHaveBeenCalledOnce();
++    expect(dbsc).toHaveBeenCalledWith("live=session; sc-a-dbsc-session=current");
++  });
++
++  it("does not treat a 303 or 403 as a successful refresh", async () => {
++    for (const [status, location] of [[303, "/v2/login"], [403, undefined]] as const) {
++      const fetch = vi.fn(async () => new Response(null, {
++        status,
++        ...(location === undefined ? {} : { headers: { location } }),
++      }));
++
++      await expect(refreshSnapchatSso(session(), { fetch })).rejects.toMatchObject({
++        code: "AUTH_CONTEXT_UNAVAILABLE",
++        details: { status },
++      });
++    }
++  });
++
+   it("rejects a malformed successful response", async () => {
+     const fetch = vi.fn(async () => new Response("too-short", {
+       status: 200,
+       headers: { scuid: session().accountId },
+     }));
+ 
+     await expect(refreshSnapchatSso(session(), { fetch })).rejects.toMatchObject({
+       code: "SESSION_REEXPORT_REQUIRED",
+       message: "SSO refresh returned an invalid token",
+     });
+

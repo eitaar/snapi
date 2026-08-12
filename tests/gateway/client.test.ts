@@ -30,19 +30,26 @@ class FakeSocket implements GatewaySocket {
 describe("GatewayClient", () => {
   it("offers auth protocols, decodes binary frames, and closes cleanly", async () => {
     const sockets: FakeSocket[] = [];
-    const factory = vi.fn((_url: string, _protocols: readonly string[]) => {
+    const factory = vi.fn((_url: string, _protocols: readonly string[], _headers?: Readonly<Record<string, string>>) => {
       const socket = new FakeSocket();
       sockets.push(socket);
       return socket;
     });
     const client = new GatewayClient({
-      auth: { getGatewayToken: async () => "gateway-secret" },
+      auth: {
+        getGatewayToken: async () => "gateway-secret",
+        getGatewayCookie: async () => "web=session",
+      },
       webSocketFactory: factory,
       now: () => new Date("2026-08-11T00:00:00.000Z"),
     });
     const connecting = client.connect();
     await vi.waitFor(() => expect(sockets).toHaveLength(1));
-    expect(factory).toHaveBeenCalledWith(expect.stringContaining("Gateway/WebSocketConnect"), ["snap-ws-auth", "gateway-secret"]);
+    expect(factory).toHaveBeenCalledWith(
+      expect.stringContaining("Gateway/WebSocketConnect"),
+      ["snap-ws-auth", "gateway-secret"],
+      { cookie: "web=session", origin: "https://www.snapchat.com" },
+    );
     expect(sockets[0]!.binaryType).toBe("arraybuffer");
     sockets[0]!.open();
     await connecting;

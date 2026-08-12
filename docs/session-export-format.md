@@ -40,6 +40,16 @@ Use `snap session refresh-har <fresh.har>` to extract, refresh, rotate, and
 persist these values as one operation; a failed refresh leaves the existing
 session file untouched.
 
+The CLI also runs the build's official Web Attestation WASM in a dedicated Node
+worker before an automatic refresh. On Windows it can additionally read the
+configured Brave `Default\Network\Device Bound Sessions` store and use the
+OS-wrapped DBSC key through Windows CNG. The private key is never exported.
+Set `SNAP_BRAVE_PROFILE_DIR` only when the profile is not the default Brave
+profile; the selected profile should be closed so its SQLite store is readable.
+The exported SSO Cookie must come from the same current Brave authentication
+epoch. If the service redirects refresh to login, the CLI reports
+`AUTH_CONTEXT_UNAVAILABLE` and leaves the session unchanged.
+
 All four fields are credentials. The CLI must never print their values.
 
 ## Messaging key lifecycle

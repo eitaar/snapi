@@ -9,9 +9,12 @@ import { redact } from "../logging/redact.js";
 import type { ConfiguredChatSendClient } from "./commands/chat-send.js";
 import type { ConfiguredGatewayStatusClient } from "./commands/gateway-status.js";
 import type { ConfiguredChatWatchClient } from "./commands/chat-watch.js";
+import type { ConfiguredSnapWatchClient } from "./commands/snap-watch.js";
+import type { ConfiguredFriendsListClient } from "./commands/friends-list.js";
 import { createProcessIo, type CliIo } from "./io.js";
 
-export type ConfiguredCliClient = ConfiguredChatSendClient & ConfiguredGatewayStatusClient & ConfiguredChatWatchClient;
+export type ConfiguredCliClient = ConfiguredChatSendClient & ConfiguredGatewayStatusClient &
+  ConfiguredChatWatchClient & ConfiguredSnapWatchClient & ConfiguredFriendsListClient;
 
 export interface CliDependencies {
   readonly runRuntimeDoctor?: (io: CliIo) => Promise<number>;
@@ -155,6 +158,31 @@ export async function main(
       return emitError(io, error);
     }
   }
+  if (argv.length >= 2 && argv[0] === "snap" && argv[1] === "watch") {
+    try {
+      const runSnapWatch = (await import("./commands/snap-watch.js")).runSnapWatch;
+      return await runSnapWatch(
+        argv.slice(2),
+        io,
+        dependencies.createClient ?? createConfiguredClient,
+        dependencies.signal,
+      );
+    } catch (error) {
+      return emitError(io, error);
+    }
+  }
+  if (argv.length >= 2 && argv[0] === "friends" && argv[1] === "list") {
+    try {
+      const runFriendsList = (await import("./commands/friends-list.js")).runFriendsList;
+      return await runFriendsList(
+        argv.slice(2),
+        io,
+        dependencies.createClient ?? createConfiguredClient,
+      );
+    } catch (error) {
+      return emitError(io, error);
+    }
+  }
   if (argv.length === 2 && argv[0] === "gateway" && argv[1] === "status") {
     try {
       const runGatewayStatus = (await import("./commands/gateway-status.js")).runGatewayStatus;
@@ -164,7 +192,7 @@ export async function main(
     }
   }
 
-  io.stderr("Usage: snap <session|chat|snap|gateway|debug>");
+  io.stderr("Usage: snap <session|chat|snap|friends|gateway|debug>");
   return 2;
 }
 

@@ -5,6 +5,17 @@ import { classifyGatewayEnvelope } from "./classifier.js";
 import type { GatewayEvent, GatewayStatus } from "./events.js";
 
 const DEFAULT_GATEWAY_URL = "wss://aws.duplex.snapchat.com/snapchat.gateway.Gateway/WebSocketConnect";
+const GATEWAY_ORIGIN = "https://www.snapchat.com";
+
+type WebSocketInit = {
+  readonly protocols?: readonly string[];
+  readonly headers?: Readonly<Record<string, string>>;
+};
+
+type WebSocketConstructor = new (
+  url: string,
+  protocols?: string | readonly string[] | WebSocketInit,
+) => WebSocket;
 
 export interface GatewaySocket {
   binaryType: string;
@@ -17,10 +28,15 @@ export interface GatewaySocket {
   close(code?: number, reason?: string): void;
 }
 
-export type WebSocketFactory = (url: string, protocols: readonly string[]) => GatewaySocket;
+export type WebSocketFactory = (
+  url: string,
+  protocols: readonly string[],
+  headers?: Readonly<Record<string, string>>,
+) => GatewaySocket;
 
 export interface GatewayAuthSource {
   getGatewayToken(): Promise<string>;
+  getGatewayCookie?(): Promise<string>;
 }
 
 export interface GatewayClientOptions {
@@ -48,8 +64,14 @@ export class GatewayClient {
   private readonly waiters: EventWaiter[] = [];
 
   constructor(private readonly options: GatewayClientOptions) {
-    this.factory = options.webSocketFactory ?? ((url, protocols) =>
-      new WebSocket(url, [...protocols]) as unknown as GatewaySocket);
+    this.factory = options.webSocketFactory ?? ((url, protocols, headers) => {
+      const Socket = WebSocket as unknown as WebSocketConstructor;
+      const init: WebSocketInit = {
+        protocols: [...protocols],
+        ...(headers === undefined ? {} : { headers }),
+      };
+      return new Socket(url, headers === undefined ? [...protocols] : init) as unknown as GatewaySocket;
+    });
     this.url = options.url ?? DEFAULT_GATEWAY_URL;
     this.reconnectDelayMs = options.reconnectDelayMs ?? 3_000;
   }
@@ -90,7 +112,15 @@ export class GatewayClient {
     this.currentStatus = reconnecting ? "reconnecting" : "connecting";
     const token = await this.options.auth.getGatewayToken();
     if (!this.desiredOpen) return;
-    const socket = this.factory(this.url, ["snap-ws-auth", token]);
+    const cookie = this.options.auth.getGatewayCookie === undefined
+      ? undefined
+      : await this.options.auth.getGatewayCookie();
+    const headers = cookie === undefined
+      ? undefined
+      : { cookie, origin: GATEWAY_ORIGIN };
+    const socket = headers === undefined
+      ? this.factory(this.url, ["snap-ws-auth", token])
+      : this.factory(this.url, ["snap-ws-auth", token], headers);
     this.socket = socket;
     socket.binaryType = "arraybuffer";
 

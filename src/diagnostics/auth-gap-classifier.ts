@@ -52,6 +52,9 @@ export function classifyAuthGap(
 
   const edgeOriginal = findUnique(observations, "edge-original");
   const edgeReplay = findUnique(observations, "edge-page-replay");
+  if (isSuccess(edgeOriginal) && isStatus(nodeBearer, 401)) {
+    return { kind: "browser-context-required", directNodeStillViable: false };
+  }
   if (isSuccess(edgeOriginal) && isStatus(edgeReplay, 401)) {
     return { kind: "request-freshness-or-single-use", directNodeStillViable: undefined };
   }

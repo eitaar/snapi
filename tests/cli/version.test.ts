@@ -24,5 +24,5 @@ describe("snap --version", () => {
     });
 
     expect(code).toBe(2);
-    expect(stderr).toEqual(["Usage: snap <session|chat|snap|gateway|debug>"]);
+    expect(stderr).toEqual(["Usage: snap <session|chat|snap|friends|gateway|debug>"]);
   });

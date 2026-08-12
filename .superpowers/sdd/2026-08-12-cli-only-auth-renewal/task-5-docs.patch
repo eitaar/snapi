@@ -1,0 +1,61 @@
+diff --git a/README.md b/README.md
+--- a/README.md
++++ b/README.md
+@@ -77,3 +77,21 @@
+ and request metadata; it does not retry or print credentials.
++
++`debug auth-renewal --cli-only` is also opt-in and read-only. It requires
++`SNAP_LIVE_TESTS=1`, attempts at most one CLI-only SSO/DBSC renewal plus one
++read-only verification request, and never persists refreshed session state from
++this diagnostic path. It returns only sanitized result metadata:
++
++- `renewed`: that one diagnostic execution completed a local refresh and the
++  single read-only verification request succeeded.
++- `browser-context-required`: the refresh or verification path reached a
++  browser-bound redirect/forbidden outcome such as HTTP `303` or `403`.
++- `profile-unavailable`: the local Brave/DBSC profile material needed for the
++  CLI-only path was unavailable in the current host context.
++- `rejected`: the local refresh path ran, but the single verification request
++  still did not succeed.
++
++The command does not print or persist raw Cookie, Bearer, token, proof, or
++request/response body material.
++
+ 
+ See [session export format](docs/session-export-format.md),
+diff --git a/docs/runtime-feasibility-report.md b/docs/runtime-feasibility-report.md
+--- a/docs/runtime-feasibility-report.md
++++ b/docs/runtime-feasibility-report.md
+@@ -43,1 +43,31 @@
+ - No live request was made because the stored path did not match the allowlist; no conclusion about Cookie sufficiency was drawn.
++
++## CLI-only auth renewal diagnostic gate
++
++The separate diagnostic command:
++
++```powershell
++$env:SNAP_LIVE_TESTS='1'
++node dist/cli/index.js debug auth-renewal --cli-only
++```
++
++is opt-in and read-only. It permits at most one CLI-only renewal attempt plus
++one read-only verification request, does not persist refreshed session state,
++and emits only sanitized result/status/capability metadata.
++
++Interpret the result values as follows:
++
++- `renewed`: this diagnostic execution completed one local refresh and the one
++  read-only verification request succeeded. It does not claim that future
++  requests, other operations, or a different authentication epoch will also
++  succeed.
++- `browser-context-required`: the renewal or verification path hit a
++  browser-bound outcome, including the expected `303`/`403` class of responses.
++  For this build/context, the CLI-only path should remain fail-closed.
++- `profile-unavailable`: local Brave/DBSC profile state required for the
++  CLI-only path was not available to the host process.
++- `rejected`: the CLI-only renewal path ran, but the single verification
++  request still failed. This is not evidence that retries, extra probes, or
++  credential replay should be added.
++
++Like the auth-gap probe, this diagnostic gate must not print or persist raw
++Cookie, Bearer, token, proof, or request/response body material.

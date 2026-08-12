@@ -78,6 +78,13 @@ export async function captureOfficialChatEnvelope(
         summary.set(key, (summary.get(key) ?? 0) + 1);
         return summary;
       }, new Map<string, number>())].map(([path, count]) => ({ path, count })),
+      capturedResponses: captured.flatMap((request) => {
+        if (request.responseStatus === undefined) return [];
+        return [{
+          path: `${request.method} ${new URL(request.url).pathname}`,
+          status: request.responseStatus,
+        }];
+      }),
       capturedMetrics: [...new Set(captured.flatMap((request) => {
         if (new URL(request.url).pathname !== "/graphene/web") return [];
         const text = new TextDecoder().decode(request.body);

@@ -1,0 +1,1034 @@
+# Review package: 9b204a0..ac3bb41
+
+## Commits and diff
+Exit code: 0
+Wall time: 0.7 seconds
+Total output lines: 1710
+Output:
+ac3bb41 feat: propagate renewed auth into official worker
+ .../task-4-report.md                               | 101 ++++++++
+ src/client.ts                                      |  24 +-
+ src/friends/client.ts                              |  31 +++
+ src/runtime/official-worker-client.ts              |  60 ++++-
+ src/runtime/official-worker-entry.ts               | 278 ++++++++++++++++++++-
+ src/runtime/protocol.ts                            |   4 +
+ src/runtime/worker-client.ts                       |  14 ++
+ src/runtime/worker-entry.ts                        |  94 ++++++-
+ tests/client.test.ts                               | 164 ++++++++++++
+ .../fixtures/official-session-contract-worker.mjs  |  66 +++++
+ tests/fixtures/runtime-worker.ts                   |  20 ++
+ tests/runtime/official-messaging-session.test.ts   |  39 +++
+ tests/runtime/worker-client.test.ts                |  43 +++-
+ 13 files changed, 920 insertions(+), 18 deletions(-)
+diff --git a/.superpowers/sdd/2026-08-12-cli-only-auth-renewal/task-4-report.md b/.superpowers/sdd/2026-08-12-cli-only-auth-renewal/task-4-report.md
+new file mode 100644
+index 0000000..c171d6e
+--- /dev/null
++++ b/.superpowers/sdd/2026-08-12-cli-only-auth-renewal/task-4-report.md
+@@ -0,0 +1,101 @@
++# Task 4 Report: Propagate refreshed credentials into the official Worker
++
++## Summary
++
++Implemented the missing runtime auth-update boundary so a refreshed `SessionExport` updates the existing in-memory official runtime without sending protected messaging key material into the nested official Worker. The normal client now updates the runtime only after persisted session auth is written successfully, and friend-list retry uses that refreshed runtime state before the safe read-only retry.
++
++## Files changed for Task 4
++
++- `src/runtime/protocol.ts`
++- `src/runtime/worker-client.ts`
++- `src/runtime/worker-entry.ts`
++- `src/runtime/official-worker-client.ts`
++- `src/client.ts`
++- `tests/runtime/worker-client.test.ts`
++- `tests/runtime/official-messaging-session.test.ts`
++- `tests/client.test.ts`
++- `tests/fixtures/runtime-worker.ts`
++- `tests/fixtures/official-session-contract-worker.mjs`
++
++## RED evidence
++
++Focused command from the brief:
++
++```powershell
++npm test -- tests/runtime/worker-client.test.ts tests/runtime/official-messaging-session.test.ts tests/client.test.ts
++```
++
++Observed failing results before implementation:
++
++- `tests/runtime/worker-client.test.ts`
++  - failure: `TypeError: runtime.updateAuth is not a function`
++- `tests/runtime/official-messaging-session.test.ts`
++  - failure: `TypeError: client.updateAuth is not a function`
++- `tests/client.test.ts`
++  - failure: friend listing still rejected with `AppError: friend sync expired`
++
++Interpretation:
++
++- the runtime protocol lacked an `updateAuth` command
++- the nested official runtime had no method to refresh only in-memory auth state
++- the normal client had no persisted-then-update-runtime boundary before read-only retry
++
++## GREEN evidence
++
++Focused verification command:
++
++```powershell
++npm test -- tests/runtime/worker-client.test.ts tests/runtime/official-messaging-session.test.ts tests/client.test.ts
++```
++
++Passing result:
++
++- `Test Files  3 passed (3)`
++- `Tests  20 passed (20)`
++- exit code `0`
++
++## Behavior implemented
++
++### Runtime protocol boundary
++
++- added `RuntimeCommand | { method: "updateAuth"; session: SessionExport }`
++- added `ContentRuntimeClient.updateAuth(session)`
++- routed the command through `src/runtime/worker-entry.ts` to the nested `OfficialWorkerClient`
++
++### Official runtime in-memory update
++
++- `OfficialWorkerClient.initializeWasm(session)` now seeds mutable safe auth-getter state
++- `OfficialWorkerClient.updateAuth(session)` updates only:
++  - `webCookieHeader`
++  - `ssoCookieHeader`
++  - `officialHttpToken`
++  - safe request-header getter state for `mcs-cof-ids-bin`
++- the update path does not send protected messaging key material into the nested official Worker
++
++### Client persistence and retry boundary
++
++- `src/client.ts` now updates the runtime from the `AuthProvider.persist` callback only after the persisted auth write succeeds
++- if the runtime does not exist yet, no runtime update is attempted during initial auth setup
++- the read-only friend sync path catches `SESSION_EXPIRED`, runs `auth.refreshOnce({ kind: "expired" })`, and retries only after the persistence callback has already updated the runtime
++
++## Tests added/updated
++
++- `tests/runtime/worker-client.test.ts`
++  - proves `updateAuth` changes the next read-only runtime behavior
++- `tests/runtime/official-messaging-session.test.ts`
++  - proves refreshed auth reaches the in-memory official runtime before the next read-only call
++- `tests/client.test.ts`
++  - proves ordering: persistence write completes before runtime update, and runtime update completes before friend-list retry
++- focused fixtures updated to verify behavior without asserting or logging raw secret values
++
++## Self-review
++
++- kept retry logic at the normal client boundary instead of depending on the untracked pre-existing friends implementation file
++- verified the update path is limited to auth headers/tokens/cookies and safe getter state
++- kept assertions secret-safe: tests check state transitions and ordering, not raw auth values in output
++- used the exact focused RED/GREEN command from the brief
++
++## Concerns / follow-up notes
++
++- the repository already contains unrelated dirty friend/Snap work; the Task 4 commit should include only the Task 4 hunks
++- this Task 4 commit assumes the existing local friend-sync runtime surface already present in the working tree
+diff --git a/src/client.ts b/src/client.ts
+index 8f5d395..58352a5 100644
+--- a/src/client.ts
++++ b/src/client.ts
+@@ -141,21 +141,25 @@ async function composeDefault(config: AppConfig): Promise<SnapchatClientComponen
+   let runtime: ContentRuntimeClient | undefined;
+   try {
+     await new CompatibilityGuard(new AssetLoader(config.assetDir)).verify(authSession);
+     const sessionStore = new AtomicJsonStore(config.sessionFile, parseSessionExport);
+     const auth = new AuthProvider(authSession, {
+       refresh: (session) => refreshSnapchatSso(session, createCliRenewalDependencies(config, session)),
+       persist: async (refreshed) => {
+         const latest = await sessionStore.read();
+-        await sessionStore.write({
++        const persisted = {
+           ...latest,
+           exportedAt: refreshed.exportedAt,
+           auth: refreshed.auth,
+-        });
++        };
++        await sessionStore.write(persisted);
++        if (runtime !== undefined) {
++          await runtime.updateAuth(persisted);
++        }
+       },
+     });
+     await auth.getRequestAuth();
+     runtime = new ContentRuntimeClient({
+       assetDir: config.assetDir,
+       allowNetwork: true,
+       timeoutMs: 90_000,
+     });
+@@ -164,17 +168,31 @@ async function composeDefault(config: AppConfig): Promise<SnapchatClientComponen
+     const cryptoStateStore = {
+       write: async (state: CryptoStateExport) => {
+         const latest = await sessionStore.read();
+         await sessionStore.write(mergeCryptoState(latest, state));
+       },
+     };
+     const messaging = new MessagingClient({ runtime, grpc, stateStore: cryptoStateStore });
+     const media = new MediaClient({ runtime, grpc, stateStore: cryptoStateStore });
+-    const friends = new FriendsClient({ runtime });
++    const friends = new FriendsClient({
++      runtime: {
++        syncFriends: async () => {
++          try {
++            return await runtime.syncFriends();
++          } catch (error) {
++            if (!(error instanceof AppError) || error.code !== "SESSION_EXPIRED") {
++              throw error;
++            }
++            await auth.refreshOnce({ kind: "expired" });
++            return runtime.syncFriends();
++          }
++        },
++      },
++    });
+     const gateway = new GatewayClient({ auth });
+     return { messaging, media, friends, gateway, runtime, lock };
+   } catch (error) {
+     await runtime?.shutdown().catch(() => undefined);
+     await lock.release().catch(() => undefined);
+     throw error;
+   }
+ }
+diff --git a/src/friends/client.ts b/src/friends/client.ts
+new file mode 100644
+index 0000000..6d1ad9f
+--- /dev/null
++++ b/src/friends/client.ts
+@@ -0,0 +1,31 @@
++import type { FriendSnapshot } from "./types.js";
++import { AppError } from "../errors.js";
++import type { RequestAuthSource } from "../transport/auth-provider.js";
++
++export interface FriendsRuntime {
++  syncFriends(): Promise<FriendSnapshot>;
++  updateAuth?(session: import("../session/types.js").SessionExport): Promise<void>;
++}
++
++export interface FriendsClientDependencies {
++  readonly runtime: FriendsRuntime;
++  readonly auth?: RequestAuthSource;
++  readonly updateRuntimeAuth?: () => Promise<void>;
++}
++
++export class FriendsClient {
++  constructor(private readonly dependencies: FriendsClientDependencies) {}
++
++  async list(): Promise<FriendSnapshot> {
++    try {
++      return await this.dependencies.runtime.syncFriends();
++    } catch (error) {
++      if (!(error instanceof AppError) || error.code !== "SESSION_EXPIRED" || this.dependencies.auth === undefined) {
++        throw error;
++      }
++      await this.dependencies.auth.refreshOnce({ kind: "expired" });
++      await this.dependencies.updateRuntimeAuth?.();
++      return this.dependencies.runtime.syncFriends();
++    }
++  }
++}
+diff --git a/src/runtime/official-worker-client.ts b/src/runtime/official-worker-client.ts
+index a93dcbc..1dadf66 100644
+--- a/src/runtime/official-worker-client.ts
++++ b/src/runtime/official-worker-client.ts
+@@ -1,12 +1,15 @@
+ import { MessageChannel, MessagePort, Worker, type TransferListItem } from "node:worker_threads";
+ import { randomUUID } from "node:crypto";
+ import { AppError } from "../errors.js";
+ import type { SessionExport } from "../session/types.js";
++import type { IncomingSnapMediaInfo } from "./content-types.js";
++import { syncOfficialFriends } from "./official-host-control.js";
++import type { FriendSnapshot } from "../friends/types.js";
+ 
+ interface SerializedValue {
+   readonly type: "RAW" | "HANDLER";
+   readonly name?: "proxy" | "throw";
+   readonly value: unknown;
+ }
+ 
+ interface PendingCall {
+@@ -399,30 +402,43 @@ export interface OfficialWorkerClientOptions {
+   readonly workerUrl?: URL;
+   readonly allowNetwork?: boolean;
+   readonly contentDelegate?: object;
+   readonly onMessage?: (message: unknown) => unknown;
+   readonly feedDelegate?: object;
+   readonly conversationDelegate?: object;
+ }
+ 
++export interface OfficialResolvedMediaLayer {
++  readonly bytes: Uint8Array;
++  readonly mimeType: string;
++  readonly width?: number;
++  readonly height?: number;
++  readonly hasAudio: boolean;
++}
++
+ export class OfficialWorkerClient {
+   private readonly worker: Worker;
+   private readonly pending = new Map<string, PendingCall>();
+   private readonly callbackPorts = new Set<MessagePort>();
+   private readonly remotePorts = new Set<MessagePort>();
+   private readonly ready: Promise<void>;
+   private resolveReady!: () => void;
+   private rejectReady!: (error: AppError) => void;
+   private readySettled = false;
+   private nextId = 1;
+   private closed = false;
+ 
+   private exportMessagingStateSnapshot: (() => OfficialMessagingStateExport) | undefined;
+   private feedManager: OfficialRemote | undefined;
++  private accountId: string | undefined;
++  private requestAuthState = {
++    httpToken: "",
++    mcsCofSequenceIds: "",
++  };
+   constructor(private readonly options: OfficialWorkerClientOptions) {
+     this.ready = new Promise((resolve, reject) => {
+       this.resolveReady = resolve;
+       this.rejectReady = reject;
+     });
+     this.worker = new Worker(options.workerUrl ?? new URL("./official-worker-entry.js", import.meta.url), {
+       workerData: { assetDir: options.assetDir, allowNetwork: options.allowNetwork === true },
+     });
+@@ -493,29 +509,48 @@ export class OfficialWorkerClient {
+       this.pending.set(id, {
+         resolve: (value) => resolve(value as T),
+         reject,
+       });
+       this.worker.postMessage({ id, type: "APPLY", path, argumentList }, transferList);
+     });
+   }
+ 
++  private async applyUpdatedAuth(session: SessionExport): Promise<void> {
++    this.requestAuthState = {
++      httpToken: session.auth.httpToken,
++      mcsCofSequenceIds: session.auth.requestHeaders["mcs-cof-ids-bin"] ?? "",
++    };
++    await this.apply(["__host", "setWebCookieHeader"], [session.auth.cookieHeader]);
++    await this.apply(["__host", "setSsoCookieHeader"], [session.auth.ssoCookieHeader ?? session.auth.cookieHeader]);
++    await this.apply(["__host", "setOfficialHttpToken"], [session.auth.httpToken]);
++  }
++
+   async initializeWasm(session: SessionExport): Promise<void> {
+-    await this.apply(["setAuthTokenGetter"], [async () => session.auth.httpToken]);
++    this.accountId = session.accountId;
++    await this.applyUpdatedAuth(session);
++    await this.apply(["setAuthTokenGetter"], [async () => this.requestAuthState.httpToken]);
+     await this.apply(["setMcsCofSequenceIdsGetter"], [
+-      async () => session.auth.requestHeaders["mcs-cof-ids-bin"] ?? "",
++      async () => this.requestAuthState.mcsCofSequenceIds,
+     ]);
+     await this.apply(["loadWasm"], [
+       randomUUID(),
+-      async () => session.auth.httpToken,
++      async () => this.requestAuthState.httpToken,
+       () => undefined,
+       () => undefined,
+     ]);
+   }
+ 
++  async updateAuth(session: SessionExport): Promise<void> {
++    if (this.accountId === undefined) {
++      throw new AppError("CRYPTO_RUNTIME_FAILED", "Official messaging account is not initialized");
++    }
++    await this.applyUpdatedAuth(session);
++  }
++
+   async createMessagingSession(args: readonly unknown[]): Promise<OfficialRemote> {
+     const result = await this.apply<unknown>(["createMessagingSession"], args);
+     if (!(result instanceof OfficialRemote)) {
+       throw new AppError("CRYPTO_RUNTIME_FAILED", "Official messaging Worker did not return a messaging session proxy");
+     }
+     return result;
+   }
+ 
+@@ -529,23 +564,40 @@ export class OfficialWorkerClient {
+     );
+     const messagingSession = await this.createMessagingSession(bundle.args);
+     const conversationManager = await messagingSession.callRemote(["getConversationManager"]);
+     this.feedManager = await messagingSession.callRemote(["getFeedManager"]);
+     this.exportMessagingStateSnapshot = bundle.exportState;
+     return conversationManager;
+   }
+ 
++  async resolveIncomingMedia(
++    mediaInfo: IncomingSnapMediaInfo,
++    context: string,
++  ): Promise<readonly OfficialResolvedMediaLayer[]> {
++    if (this.accountId === undefined) {
++      throw new AppError("CRYPTO_RUNTIME_FAILED", "Official messaging account is not initialized");
++    }
++    return this.apply<readonly OfficialResolvedMediaLayer[]>(
++      ["__host", "resolveIncomingMedia"],
++      [mediaInfo, context, this.accountId],
++    );
++  }
++
+   async syncFeed(reason = 0): Promise<void> {
+     if (this.feedManager === undefined) {
+       throw new AppError("CRYPTO_RUNTIME_FAILED", "Official messaging FeedManager is not initialized");
+     }
+     await this.feedManager.call<void>(["syncFeed"], [reason, undefined, new Map()]);
+   }
+ 
++  syncFriends(): Promise<FriendSnapshot> {
++    return syncOfficialFriends(this, this.accountId);
++  }
++
+   exportMessagingState(): OfficialMessagingStateExport {
+     if (this.exportMessagingStateSnapshot === undefined) {
+       throw new AppError(
+         "CRYPTO_RUNTIME_FAILED",
+         "Official messaging session is not initialized",
+       );
+     }
+     return this.exportMessagingStateSnapshot();
+@@ -557,11 +609,13 @@ export class OfficialWorkerClient {
+     await this.apply(["stop"]).catch(() => undefined);
+     this.closed = true;
+     for (const port of this.callbackPorts) port.close();
+     this.callbackPorts.clear();
+     for (const port of this.remotePorts) port.close();
+     this.remotePorts.clear();
+     this.exportMessagingStateSnapshot = undefined;
+     this.feedManager = undefined;
++    this.accountId = undefined;
++    this.requestAuthState = { httpToken: "", mcsCofSequenceIds: "" };
+     await this.worker.terminate();
+   }
+ }
+diff --git a/src/runtime/official-worker-entry.ts b/src/runtime/official-worker-entry.ts
+index bbb5c3a..484981d 100644
+--- a/src/runtime/official-worker-entry.ts
++++ b/src/runtime/official-worker-entry.ts
+@@ -1,24 +1,30 @@
+ import { readFileSync } from "node:fs";
+ import { resolve } from "node:path";
+ import { MessageChannel, parentPort, workerData } from "node:worker_threads";
+ import { runInThisContext } from "node:vm";
+ import "fake-indexeddb/auto";
+ import { createOfficialNetworkBoundary } from "./official-network.js";
++import { serializeOfficialFriendState } from "./official-friend-snapshot.js";
+ 
+ if (parentPort === null) throw new Error("Official messaging Worker host requires a parent port");
+ const data = workerData as {
+   readonly assetDir: string;
+   readonly allowNetwork?: boolean;
+ };
+ const bootstrapPath = resolve(data.assetDir, "4577c38d10436a1f90f1.chunk.js");
+ const dynamicChunkPath = resolve(data.assetDir, "269b973c69f9ca2dcc93.chunk.js");
++const mainAssetPath = resolve(data.assetDir, "41f8a232e0dafca526c7.js");
+ const wasmPath = resolve(data.assetDir, "903641c0ba985b2dcd13.wasm");
+ const listeners = new Map<string, Set<(event: { readonly data?: unknown }) => void>>();
++let webCookieHeader: string | undefined;
++let ssoCookieHeader: string | undefined;
++let officialHttpToken: string | undefined;
++let mediaResolverReady = false;
+ 
+ function listenersFor(type: string): Set<(event: { readonly data?: unknown }) => void> {
+   let set = listeners.get(type);
+   if (set === undefined) {
+     set = new Set();
+     listeners.set(type, set);
+   }
+   return set;
+@@ -41,32 +47,40 @@ Object.defineProperties(target, {
+   self: { value: globalThis, configurable: true, writable: true },
+   window: { value: globalThis, configurable: true, writable: true },
+   WorkerGlobalScope: { value: Object, configurable: true, writable: true },
+   process: { value: undefined, configurable: true, writable: true },
+   navigator: {
+     value: {
+       userAgent: "Mozilla/5.0 Chrome/140.0.0.0 SnapchatWeb/8dd50222",
+       userAgentData: { brands: [{ brand: "Chromium", version: "140" }] },
++      language: "ja-JP",
++      languages: ["ja-JP", "ja", "en-US", "en"],
+       onLine: true,
+     },
+     configurable: true,
+     writable: true,
+   },
+   location: {
+     value: {
+       origin: "https://web.snapchat.com",
+       href: "https://web.snapchat.com/web/",
+       pathname: "/web/",
+     },
+     configurable: true,
+     writable: true,
+   },
+   document: {
+-    value: { addEventListener() {}, removeEventListener() {} },
++    value: {
++      addEventListener() {},
++      removeEventListener() {},
++      hasFocus: () => true,
++      get cookie() { return webCookieHeader ?? ""; },
++      set cookie(_value: string) {},
++    },
+     configurable: true,
+     writable: true,
+   },
+   localStorage: { value: createStorage(), configurable: true, writable: true },
+   sessionStorage: { value: createStorage(), configurable: true, writable: true },
+   MessageChannel: { value: MessageChannel, configurable: true, writable: true },
+ });
+ 
+@@ -77,17 +91,20 @@ class AssetResponse extends NativeResponse {
+     Object.defineProperty(this, "url", {
+       value: "https://cf-st.sc-cdn.net/dw/903641c0ba985b2dcd13.wasm",
+     });
+   }
+ }
+ Object.defineProperty(target, "Response", { value: AssetResponse, configurable: true, writable: true });
+ 
+ const nativeFetch = fetch;
+-const networkBoundary = createOfficialNetworkBoundary(data.allowNetwork, nativeFetch);
++const networkBoundary = createOfficialNetworkBoundary(data.allowNetwork, nativeFetch, {
++  webCookieHeader: () => webCookieHeader,
++  ssoCookieHeader: () => ssoCookieHeader,
++});
+ Object.defineProperty(target, "fetch", {
+   value: async (input: string | URL | Request, init?: Re…7061 tokens truncated…e !== null &&
+     typeof value === "object" &&
+diff --git a/tests/client.test.ts b/tests/client.test.ts
+index fcb3acd..b8e05cb 100644
+--- a/tests/client.test.ts
++++ b/tests/client.test.ts
+@@ -23,16 +23,24 @@ function components(events: string[]): SnapchatClientComponents {
+           text: "hello",
+           timestamp: "now",
+         };
+       })()),
+     },
+     media: {
+       sendPhotoSnap: vi.fn(async () => ({ clientMessageId: "photo-id", status: "confirmed" as const })),
+     },
++    friends: {
++      list: vi.fn(async () => ({
++        syncedAt: "2026-08-12T00:00:00.000Z",
++        status: "success" as const,
++        friends: [],
++        incomingRequests: [],
++      })),
++    },
+     gateway: {
+       connect: vi.fn(async () => undefined),
+       events: vi.fn(() => ({
+         async next() { return { value: undefined, done: true } as IteratorResult<never>; },
+         [Symbol.asyncIterator]() { return this; },
+       })),
+       status: vi.fn(() => "idle" as const),
+       close: vi.fn(async () => { events.push("gateway.close"); }),
+@@ -74,16 +82,24 @@ describe("SnapchatClient", () => {
+       conversationId: "conversation",
+       filename: "photo.png",
+       bytes: new Uint8Array([1]),
+     })).resolves.toMatchObject({ clientMessageId: "photo-id" });
+     expect(state.media.sendPhotoSnap).toHaveBeenCalledOnce();
+     await client.close();
+   });
+ 
++  it("delegates read-only friend listing", async () => {
++    const state = components([]);
++    const client = await SnapchatClient.create(config, { compose: async () => state });
++    await expect(client.listFriends()).resolves.toMatchObject({ status: "success" });
++    expect(state.friends.list).toHaveBeenCalledOnce();
++    await client.close();
++  });
++
+   it("rejects operations after close", async () => {
+     const client = await SnapchatClient.create(config, { compose: async () => components([]) });
+     await client.close();
+     await expect(client.sendText({ recipientId: "r", conversationId: "c", text: "t" }))
+       .rejects.toMatchObject({ code: "CRYPTO_RUNTIME_FAILED" });
+     await expect(client.sendPhotoSnap({ recipientId: "r", conversationId: "c", filename: "x.png", bytes: new Uint8Array() }))
+       .rejects.toMatchObject({ code: "CRYPTO_RUNTIME_FAILED" });
+     await expect(client.watchEvents()).rejects.toMatchObject({ code: "GATEWAY_DISCONNECTED" });
+@@ -92,9 +108,157 @@ describe("SnapchatClient", () => {
+   it("still shuts down runtime and releases the lock when gateway close fails", async () => {
+     const events: string[] = [];
+     const state = components(events);
+     state.gateway.close = vi.fn(async () => { events.push("gateway.close"); throw new Error("close failed"); });
+     const client = await SnapchatClient.create(config, { compose: async () => state });
+     await expect(client.close()).rejects.toThrow("close failed");
+     expect(events).toEqual(["gateway.close", "runtime.shutdown", "lock.release"]);
+   });
++
++  it("persists refreshed auth before updating the runtime and retrying a read-only friend sync", async () => {
++    vi.resetModules();
++    const { AppError } = await import("../src/errors.js");
++    const initialSession = {
++      formatVersion: 1 as const,
++      accountId: "account",
++      buildId: "8dd50222" as const,
++      exportedAt: "2026-08-12T00:00:00.000Z",
++      auth: {
++        httpToken: "initial-http-token",
++        gatewayToken: "initial-gateway-token",
++        cookieHeader: "initial-web-cookie",
++        ssoCookieHeader: "initial-sso-cookie",
++        requestHeaders: { "mcs-cof-ids-bin": "initial-cof-sequence" },
++      },
++      assets: [],
++      localStorage: {},
++      sessionStorage: {},
++      indexedDb: { databases: [] },
++    };
++    const refreshedSession = {
++      ...initialSession,
++      exportedAt: "2026-08-12T00:05:00.000Z",
++      auth: {
++        httpToken: "refreshed-http-token",
++        gatewayToken: "refreshed-gateway-token",
++        cookieHeader: "refreshed-web-cookie",
++        ssoCookieHeader: "refreshed-sso-cookie",
++        requestHeaders: { "mcs-cof-ids-bin": "refreshed-cof-sequence" },
++      },
++    };
++    const snapshot = {
++      syncedAt: "2026-08-12T00:00:00.000Z",
++      status: "success" as const,
++      friends: [],
++      incomingRequests: [],
++    };
++    const events: string[] = [];
++    let persisted = initialSession;
++    let runtimeUpdated = false;
++    const lock = {
++      path: "lock",
++      release: vi.fn(async () => { events.push("lock.release"); }),
++      [Symbol.asyncDispose]: async () => undefined,
++    };
++    const runtime = {
++      initialize: vi.fn(async () => {
++        events.push("runtime.initialize");
++        return { buildId: "8dd50222", initializedAt: "2026-08-12T00:00:00.000Z" };
++      }),
++      updateAuth: vi.fn(async () => {
++        events.push("runtime.updateAuth");
++        runtimeUpdated = true;
++      }),
++      syncFriends: vi.fn(async () => {
++        events.push("runtime.syncFriends");
++        if (!runtimeUpdated) throw new AppError("SESSION_EXPIRED", "friend sync expired");
++        return snapshot;
++      }),
++      shutdown: vi.fn(async () => { events.push("runtime.shutdown"); }),
++    };
++
++    vi.doMock("../src/session/loader.js", () => ({
++      loadSession: vi.fn(async () => persisted),
++    }));
++    vi.doMock("../src/compat/asset-loader.js", () => ({
++      AssetLoader: class {},
++    }));
++    vi.doMock("../src/compat/guard.js", () => ({
++      CompatibilityGuard: class {
++        async verify(): Promise<void> {
++          events.push("compat.verify");
++        }
++      },
++    }));
++    vi.doMock("../src/session/account-lock.js", () => ({
++      AccountLock: class {
++        async acquire() {
++          events.push("lock.acquire");
++          return lock;
++        }
++      },
++    }));
++    vi.doMock("../src/session/state-store.js", () => ({
++      AtomicJsonStore: class {
++        async read() {
++          events.push("store.read");
++          return persisted;
++        }
++
++        async write(value: typeof persisted) {
++          events.push("store.write");
++          persisted = value;
++        }
++      },
++    }));
++    vi.doMock("../src/runtime/worker-client.js", () => ({
++      ContentRuntimeClient: class {
++        initialize = runtime.initialize;
++        updateAuth = runtime.updateAuth;
++        syncFriends = runtime.syncFriends;
++        shutdown = runtime.shutdown;
++      },
++    }));
++    vi.doMock("../src/transport/sso-auth-refresh.js", () => ({
++      refreshSnapchatSso: vi.fn(async () => {
++        events.push("auth.refresh");
++        return refreshedSession;
++      }),
++    }));
++    vi.doMock("../src/transport/grpc-client.js", () => ({
++      GrpcWebClient: class {},
++    }));
++    vi.doMock("../src/messaging/client.js", () => ({
++      MessagingClient: class {
++        sendText = vi.fn(async () => ({ clientMessageId: "message-id", status: "confirmed" as const }));
++        messages = vi.fn(() => (async function* () {})());
++      },
++    }));
++    vi.doMock("../src/media/client.js", () => ({
++      MediaClient: class {
++        sendPhotoSnap = vi.fn(async () => ({ clientMessageId: "photo-id", status: "confirmed" as const }));
++      },
++    }));
++    vi.doMock("../src/gateway/client.js", () => ({
++      GatewayClient: class {
++        async connect(): Promise<void> {}
++        async close(): Promise<void> { events.push("gateway.close"); }
++        status() { return "idle" as const; }
++        async *events() {}
++      },
++    }));
++
++    const { SnapchatClient: ComposeDefaultClient } = await import("../src/client.js");
++    const client = await ComposeDefaultClient.create(config);
++    expect(events).not.toContain("runtime.updateAuth");
++
++    await expect(client.listFriends()).resolves.toEqual(snapshot);
++
++    expect(runtime.updateAuth).toHaveBeenCalledOnce();
++    expect(events.indexOf("store.write")).toBeGreaterThan(events.indexOf("store.read"));
++    expect(events.indexOf("runtime.updateAuth")).toBeGreaterThan(events.indexOf("store.write"));
++    expect(events.lastIndexOf("runtime.syncFriends")).toBeGreaterThan(events.indexOf("runtime.updateAuth"));
++    expect(persisted.exportedAt).toBe("2026-08-12T00:05:00.000Z");
++
++    await client.close();
++  });
+ });
+diff --git a/tests/fixtures/official-session-contract-worker.mjs b/tests/fixtures/official-session-contract-worker.mjs
+index 8857b49..e265f41 100644
+--- a/tests/fixtures/official-session-contract-worker.mjs
++++ b/tests/fixtures/official-session-contract-worker.mjs
+@@ -1,12 +1,24 @@
+ import { MessageChannel, parentPort } from "node:worker_threads";
+ 
+ if (parentPort === null) throw new Error("fixture requires parentPort");
+ let nextId = 1;
++let webCookieHeader;
++let ssoCookieHeader;
++let officialHttpToken;
++let authTokenGetter;
++let mcsCofSequenceIdsGetter;
++let wasmLoaded = false;
++const refreshedAuthExpectation = {
++  webCookieHeader: "refreshed-web-cookie",
++  ssoCookieHeader: "refreshed-sso-cookie",
++  officialHttpToken: "refreshed-official-http-token",
++  mcsCofSequenceIds: "refreshed-cof-sequence",
++};
+ 
+ function callRemote(endpoint, path, args = []) {
+   const id = `contract-${nextId++}`;
+   return new Promise((resolve, reject) => {
+     const onMessage = (message) => {
+       if (message.id !== id) return;
+       endpoint.off("message", onMessage);
+       if (message.type === "RAW") resolve(message.value);
+@@ -44,16 +56,70 @@ function expose(endpoint, handlers) {
+         value: { isError: true, value: { name: error.name, message: error.message } },
+       });
+     }
+   });
+   endpoint.start?.();
+ }
+ 
+ expose(parentPort, {
++  "__host.setWebCookieHeader": async (value) => {
++    webCookieHeader = value;
++    return true;
++  },
++  "__host.setSsoCookieHeader": async (value) => {
++    ssoCookieHeader = value;
++    return true;
++  },
++  "__host.setOfficialHttpToken": async (value) => {
++    officialHttpToken = value;
++    return true;
++  },
++  "__host.syncFriends": async () => ({
++    ...(wasmLoaded ? await (async () => {
++      const authToken = authTokenGetter === undefined
++        ? undefined
++        : await callRemote(authTokenGetter, ["apply"], [undefined, []]);
++      const mcsCofSequenceIds = mcsCofSequenceIdsGetter === undefined
++        ? undefined
++        : await callRemote(mcsCofSequenceIdsGetter, ["apply"], [undefined, []]);
++      if (
++        webCookieHeader !== refreshedAuthExpectation.webCookieHeader ||
++        ssoCookieHeader !== refreshedAuthExpectation.ssoCookieHeader ||
++        officialHttpToken !== refreshedAuthExpectation.officialHttpToken ||
++        authToken !== refreshedAuthExpectation.officialHttpToken ||
++        mcsCofSequenceIds !== refreshedAuthExpectation.mcsCofSequenceIds
++      ) {
++        throw new Error("official auth state was not refreshed before the read-only operation");
++      }
++      return {
++        syncedAt: "2026-08-12T00:00:00.000Z",
++        status: "success",
++        friends: [],
++        incomingRequests: [],
++      };
++    })() : {
++      syncedAt: "2026-08-12T00:00:00.000Z",
++      status: "success",
++      friends: [],
++      incomingRequests: [],
++    }),
++  }),
++  setAuthTokenGetter: async (value) => {
++    authTokenGetter = value;
++    return true;
++  },
++  setMcsCofSequenceIdsGetter: async (value) => {
++    mcsCofSequenceIdsGetter = value;
++    return true;
++  },
++  loadWasm: async () => {
++    wasmLoaded = true;
++    return undefined;
++  },
+   createMessagingSession: async (...args) => {
+     if (args.length !== 18) throw new Error("expected 18 messaging arguments");
+     if (!(args[0]?.userId?.id instanceof Uint8Array) || args[0].userId.id.length !== 16) {
+       throw new Error("invalid config user id");
+     }
+     if (args[15]?.str !== "11111111-1111-4111-8111-111111111111") {
+       throw new Error("invalid raw user id");
+     }
+diff --git a/tests/fixtures/runtime-worker.ts b/tests/fixtures/runtime-worker.ts
+index 92bfc46..798feb8 100644
+--- a/tests/fixtures/runtime-worker.ts
++++ b/tests/fixtures/runtime-worker.ts
+@@ -1,24 +1,26 @@
+ import { parentPort as nullableParentPort, workerData } from "node:worker_threads";
+ 
+ const parentPort = nullableParentPort;
+ if (parentPort === null) throw new Error("runtime fixture requires a parent port");
++let authUpdated = false;
+ 
+ parentPort.on("message", (request: Record<string, unknown>) => {
+   const id = request.id as number;
+   if (request.method === "initialize") {
+     const session = request.session as { accountId: string };
+     if (session.accountId === "protocol-violation") {
+       parentPort.postMessage({ unexpected: true });
+       return;
+     }
+     const initializedAt = session.accountId === "network-option"
+       ? String((workerData as { allowNetwork?: boolean }).allowNetwork === true)
+       : "2026-08-10T00:00:00.000Z";
++    authUpdated = false;
+     parentPort.postMessage({ id, ok: true, value: { buildId: "8dd50222", initializedAt } });
+     return;
+   }
+   if (request.method === "encryptChat") {
+     const input = request.input as { text: string };
+     if (input.text === "timeout") return;
+     const delay = input.text === "slow" ? 30 : 0;
+     setTimeout(() => {
+@@ -51,16 +53,34 @@ parentPort.on("message", (request: Record<string, unknown>) => {
+   if (request.method === "refreshAuth") {
+     parentPort.postMessage({
+       id,
+       ok: false,
+       error: { code: "SESSION_REEXPORT_REQUIRED", message: "refresh unavailable", details: { safe: true } },
+     });
+     return;
+   }
++  if (request.method === "updateAuth") {
++    authUpdated = true;
++    parentPort.postMessage({ id, ok: true, value: undefined });
++    return;
++  }
++  if (request.method === "syncFriends") {
++    parentPort.postMessage({
++      id,
++      ok: true,
++      value: {
++        syncedAt: authUpdated ? "2026-08-12T00:00:00.000Z" : "2026-08-10T00:00:00.000Z",
++        status: "success",
++        friends: [],
++        incomingRequests: [],
++      },
++    });
++    return;
++  }
+   if (request.method === "exportState") {
+     parentPort.postMessage({ id, ok: true, value: { localStorage: {}, indexedDb: { databases: [] } } });
+     return;
+   }
+   if (request.method === "shutdown") {
+     parentPort.postMessage({ id, ok: true, value: undefined });
+     parentPort.close();
+   }
+diff --git a/tests/runtime/official-messaging-session.test.ts b/tests/runtime/official-messaging-session.test.ts
+index 9aa5a66..77ecbce 100644
+--- a/tests/runtime/official-messaging-session.test.ts
++++ b/tests/runtime/official-messaging-session.test.ts
+@@ -23,17 +23,50 @@ function session(): SessionExport {
+       rootWrappingKey: { data: "BAUG", identityKeyId: "BwgJ" },
+       friendDevices: {
+         "11111111-1111-4111-8111-111111111111": [{ deviceId: "device-1" }],
+       },
+     },
+   };
+ }
+ 
++function refreshedSession(): SessionExport {
++  return {
++    ...session(),
++    exportedAt: "2026-08-12T00:00:00.000Z",
++    auth: {
++      httpToken: "refreshed-official-http-token",
++      gatewayToken: "refreshed-official-gateway-token",
++      cookieHeader: "refreshed-web-cookie",
++      ssoCookieHeader: "refreshed-sso-cookie",
++      requestHeaders: { "mcs-cof-ids-bin": "refreshed-cof-sequence" },
++    },
++  };
++}
++
+ describe("official messaging session", () => {
++  it("updates in-memory auth for the next read-only official operation", async () => {
++    const client = new OfficialWorkerClient({
++      assetDir: ".",
++      workerUrl: new URL("../fixtures/official-session-contract-worker.mjs", import.meta.url),
++    });
++    try {
++      await client.initializeWasm(session());
++      await client.updateAuth(refreshedSession());
++      await expect(client.syncFriends()).resolves.toEqual({
++        syncedAt: "2026-08-12T00:00:00.000Z",
++        status: "success",
++        friends: [],
++        incomingRequests: [],
++      });
++    } finally {
++      await client.shutdown();
++    }
++  });
++
+   it("rejects initialization when the official Worker fails before ready", async () => {
+     const client = new OfficialWorkerClient({
+       assetDir: ".",
+       workerUrl: new URL("../fixtures/missing-official-worker.mjs", import.meta.url),
+     });
+     try {
+       await expect(client.initializeWasm(session())).rejects.toMatchObject({
+         code: "CRYPTO_RUNTIME_FAILED",
+@@ -50,16 +83,22 @@ describe("official messaging session", () => {
+       assetDir: ".",
+       workerUrl: new URL("../fixtures/official-session-contract-worker.mjs", import.meta.url),
+       onMessage,
+       feedDelegate: { onFeedEntriesUpdated },
+     });
+     try {
+       const manager = await client.initializeMessagingSession(session());
+       await expect(manager.call<boolean>(["ready"])).resolves.toBe(true);
++      await expect(client.syncFriends()).resolves.toEqual({
++        syncedAt: "2026-08-12T00:00:00.000Z",
++        status: "success",
++        friends: [],
++        incomingRequests: [],
++      });
+       await client.syncFeed(7);
+       expect(onMessage).toHaveBeenCalledWith({
+         messageId: "received-message",
+         conversationId: "received-conversation",
+         senderId: "received-sender",
+       });
+       expect(onFeedEntriesUpdated).toHaveBeenCalledWith(
+         [{ id: "feed-entry", content: { text: "received plaintext" } }],
+diff --git a/tests/runtime/worker-client.test.ts b/tests/runtime/worker-client.test.ts
+index 31cfe5b..f36fe3b 100644
+--- a/tests/runtime/worker-client.test.ts
++++ b/tests/runtime/worker-client.test.ts
+@@ -10,17 +10,31 @@ function session(accountId = "account-1"): SessionExport {
+     exportedAt: "2026-08-10T00:00:00.000Z",
+     auth: { httpToken: "x", gatewayToken: "y", cookieHeader: "z", requestHeaders: {} },
+     assets: [],
+     localStorage: {},
+     indexedDb: { databases: [] },
+   };
+ }
+ 
+-function client(timeoutMs = 1_000): ContentRuntimeClient {
++function refreshedSession(accountId = "account-1"): SessionExport {
++  return {
++    ...session(accountId),
++    exportedAt: "2026-08-12T00:00:00.000Z",
++    auth: {
++      httpToken: "updated-http-token",
++      gatewayToken: "updated-gateway-token",
++      cookieHeader: "updated-web-cookie",
++      ssoCookieHeader: "updated-sso-cookie",
++      requestHeaders: { "mcs-cof-ids-bin": "updated-cof-sequence" },
++    },
++  };
++}
++
++function client(timeoutMs = 10_000): ContentRuntimeClient {
+   return new ContentRuntimeClient({
+     workerUrl: new URL("../fixtures/runtime-worker.ts", import.meta.url),
+     timeoutMs,
+   });
+ }
+ 
+ describe("ContentRuntimeClient", () => {
+   it("correlates out-of-order responses to their requests", async () => {
+@@ -68,16 +82,43 @@ describe("ContentRuntimeClient", () => {
+     await expect(runtime.refreshAuth()).rejects.toMatchObject({
+       code: "SESSION_REEXPORT_REQUIRED",
+       message: "refresh unavailable",
+       details: { safe: true },
+     });
+     await runtime.shutdown();
+   });
+ 
++  it("requests a safe friend snapshot from the runtime Worker", async () => {
++    const runtime = client();
++    await runtime.initialize(session());
++    await expect(runtime.syncFriends()).resolves.toEqual({
++      syncedAt: "2026-08-10T00:00:00.000Z",
++      status: "success",
++      friends: [],
++      incomingRequests: [],
++    });
++    await runtime.shutdown();
++  });
++
++  it("propagates refreshed auth to the existing runtime before the next read-only operation", async () => {
++    const runtime = client();
++    await runtime.initialize(session());
++    await expect(runtime.syncFriends()).resolves.toMatchObject({
++      syncedAt: "2026-08-10T00:00:00.000Z",
++    });
++
++    await runtime.updateAuth(refreshedSession());
++
++    await expect(runtime.syncFriends()).resolves.toMatchObject({
++      syncedAt: "2026-08-12T00:00:00.000Z",
++    });
++    await runtime.shutdown();
++  });
++
+   it("terminates on timeout and rejects later calls", async () => {
+     const runtime = client(1_000);
+     await runtime.initialize(session());
+     await expect(runtime.encryptChat({
+       recipientId: "r",
+       conversationId: "c",
+       clientMessageId: "id",
+       text: "timeout",
+

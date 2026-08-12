@@ -18,6 +18,7 @@ describe("official Chat capture flow", () => {
       url: "https://web.snapchat.com/messagingcoreservice.MessagingCoreService/CreateContentMessage",
       method: "POST",
       body: encodeDataFrame(writeBytesField(4, envelope)),
+      responseStatus: 200,
     }];
     let drains = 0;
     const apply = vi.fn(async (path: readonly string[]) => {
@@ -66,6 +67,7 @@ describe("official Chat capture flow", () => {
         timeoutMs: 2,
         callbackStatus: "not-called",
         capturedRequests: [],
+        capturedResponses: [],
         capturedMetrics: [],
       },
     });

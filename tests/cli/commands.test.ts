@@ -1,4 +1,7 @@
 import { describe, expect, it, vi } from "vitest";
+import { mkdtemp, rm } from "node:fs/promises";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
 import { main, type ConfiguredCliClient } from "../../src/cli/index.js";
 import { AppError } from "../../src/errors.js";
 
@@ -40,6 +43,26 @@ function configured(overrides: Partial<ConfiguredCliClient["client"]> = {}): Con
           timestamp: "2026-08-11T00:00:00.000Z",
         };
       })()),
+      watchSnaps: vi.fn(() => (async function* () {
+        yield {
+          type: "snap.received" as const,
+          senderId: "sender",
+          conversationId: "conversation",
+          messageId: "received-snap",
+          timestamp: "2026-08-11T00:00:00.000Z",
+          media: [{
+            bytes: new Uint8Array([1, 2, 3]),
+            mimeType: "image/jpeg",
+            hasAudio: false,
+        }],
+        };
+      })()),
+      listFriends: vi.fn(async () => ({
+        syncedAt: "2026-08-12T00:00:00.000Z",
+        status: "success" as const,
+        friends: [],
+        incomingRequests: [],
+      })),
       close: vi.fn(async () => undefined),
       ...overrides,
     },
@@ -125,6 +148,19 @@ describe("CLI commands", () => {
     expect(state.client.close).toHaveBeenCalledOnce();
   });
 
+  it("routes read-only friend listing", async () => {
+    const output = io();
+    const state = configured();
+    const code = await main(["friends", "list"], output.value, {
+      createClient: async () => state,
+    });
+
+    expect(code).toBe(0);
+    expect(state.client.listFriends).toHaveBeenCalledOnce();
+    expect(JSON.parse(output.stdout[0]!)).toMatchObject({ type: "friends.list", status: "success" });
+    expect(state.client.close).toHaveBeenCalledOnce();
+  });
+
   it("prints intended incoming plaintext only for chat watch", async () => {
     const output = io();
     const state = configured();
@@ -141,6 +177,27 @@ describe("CLI commands", () => {
       timestamp: "2026-08-11T00:00:00.000Z",
     });
     expect(state.client.close).toHaveBeenCalledOnce();
+  });
+
+  it("saves incoming Snap media without printing its bytes", async () => {
+    const output = io();
+    const state = configured();
+    const outputDir = await mkdtemp(join(tmpdir(), "snap-cli-"));
+    try {
+      const code = await main(["snap", "watch", "--output-dir", outputDir, "--json"], output.value, {
+        createClient: async () => state,
+      });
+      expect(code).toBe(0);
+      expect(state.client.watchSnaps).toHaveBeenCalledOnce();
+      expect(output.stdout.join("\n")).not.toContain("1,2,3");
+      expect(JSON.parse(output.stdout[0]!)).toMatchObject({
+        type: "snap.received",
+        files: [expect.stringContaining("received-snap-0.jpg")],
+      });
+      expect(state.client.close).toHaveBeenCalledOnce();
+    } finally {
+      await rm(outputDir, { recursive: true, force: true });
+    }
   });
 
   it("blocks auth-gap live probing unless explicitly enabled", async () => {

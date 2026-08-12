@@ -67,6 +67,51 @@ describe("runReadOnlyAuthProbe", () => {
     expect(fetch).toHaveBeenCalledOnce();
   });
 
+  it("retains non-secret browser metadata needed for an exact read-only comparison", async () => {
+    let observedHeaders: Headers | undefined;
+    const fetch = vi.fn(async (_url: string | URL | Request, init?: RequestInit) => {
+      observedHeaders = new Headers(init?.headers);
+      return new Response(null, { status: 401 });
+    });
+
+    const observation = await runReadOnlyAuthProbe(fixture("node-bearer", {
+      headers: {
+        "caller-source": "WEB-ACCOUNTS",
+        dnt: "1",
+        prefer: "safe",
+        referer: "https://www.snapchat.com/web",
+        "sec-ch-ua": '"Chromium";v="140"',
+        "sec-ch-ua-mobile": "?0",
+        "sec-ch-ua-platform": '"Windows"',
+        "user-agent": "Mozilla/5.0 test browser",
+      },
+    }), { fetch });
+    expect(observation.status).toBe(401);
+    expect(observedHeaders?.get("caller-source")).toBe("WEB-ACCOUNTS");
+    expect(observedHeaders?.get("dnt")).toBe("1");
+    expect(observedHeaders?.get("prefer")).toBe("safe");
+    expect(observedHeaders?.get("referer")).toBe("https://www.snapchat.com/web");
+    expect(observedHeaders?.get("sec-ch-ua")).toBe('"Chromium";v="140"');
+    expect(observedHeaders?.get("sec-ch-ua-mobile")).toBe("?0");
+    expect(observedHeaders?.get("sec-ch-ua-platform")).toBe('"Windows"');
+    expect(observedHeaders?.get("user-agent")).toBe("Mozilla/5.0 test browser");
+    expect(fetch).toHaveBeenCalledOnce();
+  });
+
+  it("allows the observed DeltaForce read-only DeltaSync endpoint", async () => {
+    const fetch = vi.fn(async () => new Response(null, { status: 200 }));
+
+    const observation = await runReadOnlyAuthProbe(fixture("node-web-cookie", {
+      url: "https://web.snapchat.com/com.snapchat.deltaforce.external.DeltaForce/DeltaSync",
+    }), { fetch });
+
+    expect(observation).toMatchObject({
+      endpointPath: "/com.snapchat.deltaforce.external.DeltaForce/DeltaSync",
+      status: 200,
+    });
+    expect(fetch).toHaveBeenCalledOnce();
+  });
+
   it.each([
     ["GET", "https://web.snapchat.com/messagingcoreservice.MessagingCoreService/DeltaSync", "only allows POST"],
     ["POST", "http://web.snapchat.com/messagingcoreservice.MessagingCoreService/DeltaSync", "HTTPS is required"],

@@ -8,5 +8,6 @@ export { loadSession } from "./session/loader.js";
 export { parseSessionExport } from "./session/schema.js";
 export type * from "./session/types.js";
 export type * from "./gateway/events.js";
-export type { ChatMessageEvent, SendResult, SendTextInput } from "./messaging/client.js";
+export type { ChatMessageEvent, SendResult, SendTextInput, SnapMessageEvent } from "./messaging/client.js";
 export type { SendPhotoSnapInput } from "./media/client.js";
+export type { FriendDirection, FriendRecord, FriendRelationshipStatus, FriendSnapshot } from "./friends/types.js";

@@ -27,12 +27,25 @@ export interface OfficialNetworkBoundary {
   drainObservedRequests(): readonly ObservedOfficialRequest[];
 }
 
+export interface OfficialNetworkCredentials {
+  readonly webCookieHeader: () => string | undefined;
+  readonly ssoCookieHeader?: () => string | undefined;
+}
+
 const CAPTURE_READ_ONLY_PATHS = new Set([
   "/messagingcoreservice.MessagingCoreService/DeltaSync",
   "/messagingcoreservice.MessagingCoreService/GetGroups",
 ]);
 
 const CAPTURE_LOCAL_ACK_PATHS = new Set(["/graphene/web"]);
+
+const WEB_COOKIE_PATHS = new Set([
+  ...CAPTURE_READ_ONLY_PATHS,
+  "/com.snapchat.deltaforce.external.DeltaForce/DeltaSync",
+  "/api/158/envelope/",
+  "/com.snapchat.atlas.gw.AtlasGw/SyncFriendData",
+  "/snapchat.friending.server.FriendRequests/IncomingFriendSync",
+]);
 
 function safeErrorCode(error: unknown): string | undefined {
   if (error === null || typeof error !== "object") return undefined;
@@ -57,6 +70,26 @@ function safeErrorReason(error: unknown): string | undefined {
   return undefined;
 }
 
+function withCookie(
+  request: Request,
+  credentials: OfficialNetworkCredentials | undefined,
+): Request | undefined {
+  if (request.method !== "POST") return undefined;
+  const url = new URL(request.url);
+  const isWebContext = url.origin === "https://web.snapchat.com" && WEB_COOKIE_PATHS.has(url.pathname);
+  const isSsoContext = url.origin === "https://accounts.snapchat.com" && url.pathname === "/accounts/sso";
+  if (!isWebContext && !isSsoContext) return undefined;
+  const headers = new Headers(request.headers);
+  if (!headers.has("cookie") && credentials !== undefined) {
+    const cookie = isWebContext
+      ? credentials.webCookieHeader()
+      : credentials.ssoCookieHeader?.();
+    if (cookie !== undefined && cookie.trim() !== "") headers.set("cookie", cookie);
+  }
+  if (headers.get("cookie") === request.headers.get("cookie")) return undefined;
+  return new Request(request, { headers });
+}
+
 export function createGuardedOfficialFetch(
   allowNetwork: boolean | undefined,
   networkFetch: OfficialFetch,
@@ -72,6 +105,7 @@ export function createGuardedOfficialFetch(
 export function createOfficialNetworkBoundary(
   allowNetwork: boolean | undefined,
   networkFetch: OfficialFetch,
+  credentials?: OfficialNetworkCredentials,
 ): OfficialNetworkBoundary {
   let captureOnly = false;
   const captured: CapturedOfficialRequest[] = [];
@@ -97,7 +131,7 @@ export function createOfficialNetworkBoundary(
             captured.push(capturedRequest);
             throw new Error("Official messaging network access is disabled");
           }
-          const response = await networkFetch(request);
+          const response = await networkFetch(withCookie(request, credentials) ?? request);
           captured.push({ ...capturedRequest, responseStatus: response.status });
           return response;
         }
@@ -121,7 +155,17 @@ export function createOfficialNetworkBoundary(
         return `${url.origin}${url.pathname}`;
       })();
       try {
-        const response = await networkFetch(input, init);
+        let networkInput = input;
+        let networkInit = init;
+        if (credentials !== undefined) {
+          const request = input instanceof Request ? input.clone() : new Request(input, init);
+          const requestWithCookie = withCookie(request, credentials);
+          if (requestWithCookie !== undefined) {
+            networkInput = requestWithCookie;
+            networkInit = undefined;
+          }
+        }
+        const response = await networkFetch(networkInput, networkInit);
         observed.push({ path, method: requestMethod, responseStatus: response.status });
         return response;
       } catch (error) {

@@ -26,6 +26,34 @@ export interface ChatMessage {
   readonly timestamp: string;
 }
 
+export interface IncomingSnapMediaInfo {
+  readonly mediaMetadata: {
+    readonly encryptionInfo?: unknown;
+    readonly dimensions?: unknown;
+    readonly hasSound: boolean;
+    readonly zipped: boolean;
+    readonly type: "Image" | "Video" | "Audio" | "Gif" | "Unknown";
+  };
+  readonly mediaReference: unknown;
+}
+
+export interface IncomingSnapMedia {
+  readonly bytes: Uint8Array;
+  readonly mimeType: string;
+  readonly width?: number;
+  readonly height?: number;
+  readonly hasAudio: boolean;
+}
+
+export interface IncomingSnap {
+  readonly type: "snap.received";
+  readonly senderId: string;
+  readonly conversationId: string;
+  readonly messageId: string;
+  readonly timestamp: string;
+  readonly media?: readonly IncomingSnapMedia[];
+}
+
 export interface PhotoSnapInput {
   readonly recipientId: string;
   readonly conversationId: string;
