@@ -40,8 +40,9 @@ describe("classifyRenewalFailure", () => {
   it("classifies a missing DBSC profile as unavailable without preserving unsafe details", () => {
     const error = new AppError(
       "AUTH_CONTEXT_UNAVAILABLE",
-      "Brave DBSC profile directory is unavailable",
+      "wording may change without changing the structured reason",
       {
+        reason: "dbsc-profile-unavailable",
         profileDir: "C:/Users/example/AppData/Local/Brave/profile",
         secureSessionResponse: "proof-secret",
       },
@@ -89,6 +90,7 @@ describe("classifyRenewalFailure", () => {
       "SESSION_REEXPORT_REQUIRED",
       "SSO refresh returned an invalid token",
       {
+        reason: "invalid-token",
         responseBody: "x".repeat(96),
       },
     );
@@ -102,6 +104,19 @@ describe("classifyRenewalFailure", () => {
       },
     });
     expectSafeSerialization(classified, ["xxxxxxxx", "responseBody"]);
+  });
+
+  it("does not use error wording to choose a renewal capability", () => {
+    const first = classifyRenewalFailure(new AppError(
+      "SESSION_REEXPORT_REQUIRED",
+      "invalid token wording",
+    ));
+    const second = classifyRenewalFailure(new AppError(
+      "SESSION_REEXPORT_REQUIRED",
+      "unrelated wording",
+    ));
+
+    expect(first.details.observations).toEqual(second.details.observations);
   });
 
   it("wraps an unknown failure in a safe renewal contract", () => {

@@ -1,4 +1,6 @@
 import { AppError, type ErrorCode } from "../errors.js";
+import type { SsoRefreshDependencies } from "../transport/sso-auth-refresh.js";
+import type { DbscRefreshResult } from "./dbsc.js";
 import type { SessionExport } from "../session/types.js";
 
 export type RenewalCapability =
@@ -19,7 +21,27 @@ export interface RenewalResult {
   readonly observations: readonly RenewalObservation[];
 }
 
+export interface RenewalInputs {
+  readonly session: SessionExport;
+  readonly dbscRefresh?: (cookieHeader: string) => Promise<DbscRefreshResult>;
+  readonly ssoDependencies?: SsoRefreshDependencies;
+}
+
+type RenewalFailureReason = "dbsc-profile-unavailable" | "invalid-token";
+
+type SafeRedirectDetails = {
+  reason?: RenewalFailureReason;
+  locationOrigin?: string;
+  locationPath?: string;
+  locationQueryKeys?: readonly string[];
+  locationHasCode?: boolean;
+  locationHasError?: boolean;
+  locationInvalid?: boolean;
+  hasLocation?: boolean;
+};
+
 type SafeRenewalDetails = Readonly<{
+  reason?: RenewalFailureReason;
   status?: number;
   locationOrigin?: string;
   locationPath?: string;
@@ -36,8 +58,11 @@ function numericStatus(details: Readonly<Record<string, unknown>>): number | und
   return typeof value === "number" && Number.isFinite(value) ? value : undefined;
 }
 
-function safeRedirectDetails(details: Readonly<Record<string, unknown>>): Omit<SafeRenewalDetails, "observations" | "status"> {
-  const safe: Omit<SafeRenewalDetails, "observations" | "status"> = {};
+function safeRedirectDetails(details: Readonly<Record<string, unknown>>): SafeRedirectDetails {
+  const safe: SafeRedirectDetails = {};
+  if (details.reason === "dbsc-profile-unavailable" || details.reason === "invalid-token") {
+    safe.reason = details.reason;
+  }
   if (typeof details.locationOrigin === "string") safe.locationOrigin = details.locationOrigin;
   if (typeof details.locationPath === "string") safe.locationPath = details.locationPath;
   if (Array.isArray(details.locationQueryKeys) && details.locationQueryKeys.every((value) => typeof value === "string")) {
@@ -84,7 +109,7 @@ export function classifyRenewalFailure(error: unknown): AppError {
     );
   }
 
-  if (error.code === "AUTH_CONTEXT_UNAVAILABLE" && /dbsc profile directory is unavailable/i.test(error.message)) {
+  if (error.code === "AUTH_CONTEXT_UNAVAILABLE" && error.details.reason === "dbsc-profile-unavailable") {
     return renewalError(
       "AUTH_CONTEXT_UNAVAILABLE",
       "CLI-only authentication renewal could not use the local DBSC profile",
@@ -92,7 +117,7 @@ export function classifyRenewalFailure(error: unknown): AppError {
     );
   }
 
-  if (error.code === "SESSION_REEXPORT_REQUIRED" && /invalid token/i.test(error.message)) {
+  if (error.code === "SESSION_REEXPORT_REQUIRED" && error.details.reason === "invalid-token") {
     return renewalError(
       "SESSION_REEXPORT_REQUIRED",
       "CLI-only authentication renewal rejected the returned session state",
