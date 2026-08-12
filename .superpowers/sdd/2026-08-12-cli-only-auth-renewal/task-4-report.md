@@ -103,6 +103,8 @@ Passing result:
 
 ## Fix round 1
 
+Fix round 1 changed exactly these 8 files: `src/runtime/protocol.ts`, `src/runtime/worker-client.ts`, `src/runtime/worker-entry.ts`, `src/runtime/official-worker-client.ts`, `src/runtime/official-worker-entry.ts`, `tests/fixtures/runtime-worker.ts`, `tests/runtime/official-messaging-session.test.ts`, and this report. The `src/friends/client.ts` entry above belongs to the initial mixed Task 4 commit and was not changed in this fix round.
+
 - Changed the runtime command to carry `RuntimeAuthUpdate` only: account ID, HTTP token, web Cookie, SSO Cookie, and the safe MCS-Cof header value. `ContentRuntimeClient.updateAuth(SessionExport)` now extracts this payload before posting to the Worker.
 - The nested official runtime accepts the auth-only payload; protected messaging state is not serialized by the update command.
 - Invalid host setter arguments now throw into the existing Worker error response path instead of returning without a response and hanging the caller.
