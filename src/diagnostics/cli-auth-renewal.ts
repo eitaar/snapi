@@ -1,5 +1,5 @@
 import { readFile } from "node:fs/promises";
-import { resolve } from "node:path";
+import { dirname, join } from "node:path";
 import { applyCookieOverrides } from "../auth/cookie-overrides.js";
 import { classifyRenewalFailure, type RenewalObservation } from "../auth/renewal.js";
 import { readBraveCookieHeader } from "../auth/brave-cookies.js";
@@ -16,7 +16,16 @@ import {
 } from "./read-only-auth-probe.js";
 import { refreshSnapchatSso } from "../transport/sso-auth-refresh.js";
 
-const DEFAULT_PROBE_PATH = resolve("private", "edge-delta-probe.json");
+const PROBE_FILENAME = "edge-delta-probe.json";
+
+export interface CliAuthRenewalProbeFixture {
+  readonly binding: {
+    readonly accountId: string;
+    readonly buildId: "8dd50222";
+    readonly sessionExportedAt: string;
+  };
+  readonly request: ReadOnlyAuthProbeInput["request"];
+}
 
 export interface CliAuthRenewalReport {
   readonly mode: "cli-only";
@@ -31,7 +40,7 @@ export interface CliAuthRenewalDependencies {
   readonly session?: SessionExport;
   readonly fetch?: typeof globalThis.fetch;
   readonly now?: () => Date;
-  readonly readProbeRequest?: () => Promise<ReadOnlyAuthProbeInput["request"]>;
+  readonly readProbeFixture?: (path: string) => Promise<unknown>;
   readonly cookieSource?: () => Promise<string>;
   readonly dbsc?: (cookieHeader: string) => Promise<{ readonly cookieHeader: string }>;
   readonly attestation?: (session: SessionExport) => Promise<string>;
@@ -66,7 +75,27 @@ function parseProbeRequest(value: unknown): ReadOnlyAuthProbeInput["request"] {
   };
 }
 
-async function loadProbeRequest(path = DEFAULT_PROBE_PATH): Promise<ReadOnlyAuthProbeInput["request"]> {
+function parseProbeFixture(value: unknown): CliAuthRenewalProbeFixture {
+  const fixture = objectAt(value, "CLI auth-renewal probe fixture is invalid");
+  const binding = objectAt(fixture.binding, "CLI auth-renewal probe binding is required");
+  const buildId = stringAt(binding.buildId, "CLI auth-renewal probe build binding is required");
+  if (buildId !== "8dd50222") {
+    throw invalid("CLI auth-renewal probe build binding is unsupported");
+  }
+  return {
+    binding: {
+      accountId: stringAt(binding.accountId, "CLI auth-renewal probe account binding is required"),
+      buildId,
+      sessionExportedAt: stringAt(
+        binding.sessionExportedAt,
+        "CLI auth-renewal probe session binding is required",
+      ),
+    },
+    request: parseProbeRequest(fixture.request),
+  };
+}
+
+async function loadProbeFixture(path: string): Promise<unknown> {
   let text: string;
   try {
     text = await readFile(path, "utf8");
@@ -74,10 +103,32 @@ async function loadProbeRequest(path = DEFAULT_PROBE_PATH): Promise<ReadOnlyAuth
     throw invalid("Unable to read CLI auth-renewal probe request");
   }
   try {
-    return parseProbeRequest(parseJsonWithBytes(text));
+    return parseJsonWithBytes(text);
   } catch (error) {
     if (error instanceof AppError) throw error;
     throw invalid("CLI auth-renewal probe request is not valid JSON");
+  }
+}
+
+function assertProbeBinding(
+  config: AppConfig,
+  session: SessionExport,
+  fixture: CliAuthRenewalProbeFixture,
+): void {
+  if (
+    fixture.binding.accountId !== config.accountId ||
+    fixture.binding.accountId !== session.accountId
+  ) {
+    throw invalid("CLI auth-renewal probe account binding does not match the configured session");
+  }
+  if (
+    fixture.binding.buildId !== config.buildId ||
+    fixture.binding.buildId !== session.buildId
+  ) {
+    throw invalid("CLI auth-renewal probe build binding does not match the configured session");
+  }
+  if (fixture.binding.sessionExportedAt !== session.exportedAt) {
+    throw invalid("CLI auth-renewal probe session binding does not match the configured session");
   }
 }
 
@@ -162,10 +213,15 @@ export async function runCliAuthRenewalProbe(
       ? {}
       : { ssoCookieHeader: config.ssoCookieHeader ?? config.cookieHeader }),
   });
-  const request = await (dependencies.readProbeRequest ?? (() => loadProbeRequest()))();
+  const probePath = join(dirname(config.sessionFile), PROBE_FILENAME);
+  const fixture = parseProbeFixture(await (
+    dependencies.readProbeFixture ?? loadProbeFixture
+  )(probePath));
+  assertProbeBinding(config, loadedSession, fixture);
+  const request = fixture.request;
   const allowLiveLocalDependencies = dependencies.config === undefined
     && dependencies.session === undefined
-    && dependencies.readProbeRequest === undefined;
+    && dependencies.readProbeFixture === undefined;
 
   const profileDir = resolveOptionalBraveProfileDir(env);
   const usage = {

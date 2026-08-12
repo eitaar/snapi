@@ -119,12 +119,21 @@ full context.
 `debug auth-gap` is limited to one explicitly enabled, read-only request against
 the allowlisted MessagingCoreService `DeltaSync`/`GetGroups` paths or the
 observed DeltaForce `DeltaSync` path. It emits only sanitized status and
-request metadata; it does not retry or print credentials.
+request metadata; it does not retry or print credentials. Its `--session`
+argument must resolve to `SNAP_SESSION_FILE`, and that export must match the
+configured account and build.
 
 `debug auth-renewal --cli-only` is also opt-in and read-only. It requires
 `SNAP_LIVE_TESTS=1`, attempts at most one CLI-only SSO/DBSC renewal plus one
 read-only verification request, and never persists refreshed session state from
-this diagnostic path. It returns only sanitized result metadata:
+this diagnostic path. The protected verification fixture must be named
+`edge-delta-probe.json`, live
+beside `SNAP_SESSION_FILE`, and carry a `binding` object whose `accountId`,
+`buildId`, and `sessionExportedAt` exactly match that configured session. A
+legacy unbound fixture or a stale/different account, build, or session epoch is
+rejected before refresh or verification network traffic.
+
+The command returns only sanitized result metadata:
 
 - `renewed`: that one diagnostic execution completed a local refresh and the
   single read-only verification request succeeded.

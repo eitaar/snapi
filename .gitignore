@@ -12,3 +12,4 @@ outputs/
 scratch/
 *.har
 *.wasm
+.codex-remote-attachments/

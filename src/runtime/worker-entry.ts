@@ -22,6 +22,12 @@ import { uploadOfficialPhotoContent } from "../media/official-upload.js";
 import { GrpcWebClient } from "../transport/grpc-client.js";
 import { beginOfficialCaptureOnly, drainOfficialCapturedRequests } from "./official-host-control.js";
 import { extractCapturedContent, isCapturedCreateContentMessage } from "./official-captured-content.js";
+import { RuntimeRequestAuth } from "./runtime-request-auth.js";
+import {
+  IncomingSnapQueue,
+  MAX_RESOLVED_BYTES_PER_SNAP,
+  MAX_RESOLVED_LAYERS_PER_SNAP,
+} from "./incoming-snap-queue.js";
 
 if (parentPort === null) throw new Error("Content runtime Worker requires a parent port");
 
@@ -34,20 +40,38 @@ let officialRuntime: OfficialWorkerClient | undefined;
 let officialConversationManager: OfficialRemote | undefined;
 let installedGlobals: InstalledGlobals | undefined;
 let photoBuilder: OfficialPhotoContentBuilder | undefined;
+let photoRequestAuth: RuntimeRequestAuth | undefined;
 let photoUploadError: AppError | undefined;
 let chatSyncError: AppError | undefined;
-let snapResolveError: AppError | undefined;
 const chatMessages: ChatMessage[] = [];
-const snapMessages: IncomingSnap[] = [];
+const incomingSnapQueue = new IncomingSnapQueue();
 
 async function resolveIncomingSnap(
   runtime: OfficialWorkerClient,
   snap: OfficialIncomingSnapCandidate,
-): Promise<void> {
+): Promise<IncomingSnap> {
   const media: IncomingSnapMedia[] = [];
+  let totalBytes = 0;
+  let totalLayers = 0;
   for (const mediaInfo of snap.mediaInfos) {
     const layers = await runtime.resolveIncomingMedia(mediaInfo, "chat_playback");
+    totalLayers += layers.length;
+    if (totalLayers > MAX_RESOLVED_LAYERS_PER_SNAP) {
+      throw new AppError(
+        "CRYPTO_RUNTIME_FAILED",
+        "Incoming Snap exceeded the resolved layer limit",
+        { maxLayers: MAX_RESOLVED_LAYERS_PER_SNAP },
+      );
+    }
     for (const layer of layers) {
+      totalBytes += layer.bytes.byteLength;
+      if (totalBytes > MAX_RESOLVED_BYTES_PER_SNAP) {
+        throw new AppError(
+          "CRYPTO_RUNTIME_FAILED",
+          "Incoming Snap exceeded the resolved byte limit",
+          { maxBytes: MAX_RESOLVED_BYTES_PER_SNAP },
+        );
+      }
       media.push({
         bytes: layer.bytes,
         mimeType: layer.mimeType,
@@ -57,14 +81,14 @@ async function resolveIncomingSnap(
       });
     }
   }
-  snapMessages.push({
+  return {
     type: "snap.received",
     senderId: snap.senderId,
     conversationId: snap.conversationId,
     messageId: snap.messageId,
     timestamp: snap.timestamp,
     media,
-  });
+  };
 }
 
 function asSerializedError(error: unknown): SerializedAppError {
@@ -115,20 +139,9 @@ async function initialize(request: Extract<RuntimeRequest, { method: "initialize
     const nextPhotoBuilder = new OfficialPhotoContentBuilder(
       await readFile(join(data.assetDir, "41f8a232e0dafca526c7.js"), "utf8"),
     );
+    const nextPhotoRequestAuth = new RuntimeRequestAuth(session);
     const mediaGrpc = new GrpcWebClient({
-      auth: {
-        getRequestAuth: async () => ({
-          httpToken: session.auth.httpToken,
-          cookieHeader: session.auth.cookieHeader,
-          headers: session.auth.requestHeaders,
-        }),
-        refreshOnce: async () => {
-          throw new AppError(
-            "SESSION_REEXPORT_REQUIRED",
-            "Photo upload authentication expired inside the content runtime",
-          );
-        },
-      },
+      auth: nextPhotoRequestAuth,
     });
     const contentDelegate = {
       uploadMedia: async (
@@ -174,16 +187,7 @@ async function initialize(request: Extract<RuntimeRequest, { method: "initialize
         if (Array.isArray(messages)) {
           chatMessages.push(...nextPhotoBuilder.decodeChatMessages(messages));
           const incomingSnaps = nextPhotoBuilder.decodeIncomingSnapMessages(messages);
-          for (const incomingSnap of incomingSnaps) {
-            if (callbackRuntime === undefined) continue;
-            void resolveIncomingSnap(callbackRuntime, incomingSnap).catch((error: unknown) => {
-              snapResolveError = error instanceof AppError
-                ? error
-                : new AppError("CRYPTO_RUNTIME_FAILED", "Official incoming Snap media resolution failed", {
-                    errorName: error instanceof Error ? error.name : "UnknownError",
-                  });
-            });
-          }
+          if (callbackRuntime !== undefined) incomingSnapQueue.enqueue(incomingSnaps);
         }
       },
       onSendStarted: noop,
@@ -226,6 +230,7 @@ async function initialize(request: Extract<RuntimeRequest, { method: "initialize
     }
     officialRuntime = nextOfficialRuntime;
     photoBuilder = nextPhotoBuilder;
+    photoRequestAuth = nextPhotoRequestAuth;
     return { buildId: "8dd50222", initializedAt: new Date().toISOString() };
   } catch (error) {
     installedGlobals.restore();
@@ -319,6 +324,7 @@ async function dispatch(request: RuntimeRequest): Promise<unknown> {
         throw new AppError("CRYPTO_RUNTIME_FAILED", "Content runtime is not initialized");
       }
       await officialRuntime.updateAuth(request.auth);
+      photoRequestAuth?.update(request.auth);
       return undefined;
     case "encryptChat":
       if (officialRuntime === undefined || officialConversationManager === undefined) {
@@ -347,6 +353,9 @@ async function dispatch(request: RuntimeRequest): Promise<unknown> {
       }
       chatSyncError = undefined;
       return officialRuntime.syncFeed(0);
+    case "setSnapWatchActive":
+      incomingSnapQueue.setActive(request.active);
+      return undefined;
     case "syncFriends":
       if (officialRuntime === undefined) {
         throw new AppError("CRYPTO_RUNTIME_FAILED", "Content runtime is not initialized");
@@ -360,12 +369,10 @@ async function dispatch(request: RuntimeRequest): Promise<unknown> {
       }
       return chatMessages.splice(0);
     case "drainSnapMessages":
-      if (snapResolveError !== undefined) {
-        const error = snapResolveError;
-        snapResolveError = undefined;
-        throw error;
+      if (officialRuntime === undefined) {
+        throw new AppError("CRYPTO_RUNTIME_FAILED", "Content runtime is not initialized");
       }
-      return snapMessages.splice(0);
+      return incomingSnapQueue.drain((candidate) => resolveIncomingSnap(officialRuntime!, candidate));
     case "shutdown":
       await officialRuntime?.shutdown();
       installedGlobals?.restore();
@@ -374,11 +381,11 @@ async function dispatch(request: RuntimeRequest): Promise<unknown> {
       officialRuntime = undefined;
       officialConversationManager = undefined;
       photoBuilder = undefined;
+      photoRequestAuth = undefined;
       photoUploadError = undefined;
       chatSyncError = undefined;
-      snapResolveError = undefined;
+      incomingSnapQueue.setActive(false);
       chatMessages.splice(0);
-      snapMessages.splice(0);
       return undefined;
   }
 }

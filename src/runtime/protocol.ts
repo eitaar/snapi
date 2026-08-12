@@ -36,6 +36,7 @@ export type RuntimeCommand =
   | { readonly method: "refreshAuth" }
   | { readonly method: "exportState" }
   | { readonly method: "syncMessages" }
+  | { readonly method: "setSnapWatchActive"; readonly active: boolean }
   | { readonly method: "syncFriends" }
   | { readonly method: "drainChatMessages" }
   | { readonly method: "drainSnapMessages" }

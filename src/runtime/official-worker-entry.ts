@@ -5,6 +5,15 @@ import { runInThisContext } from "node:vm";
 import "fake-indexeddb/auto";
 import { createOfficialNetworkBoundary } from "./official-network.js";
 import { serializeOfficialFriendState } from "./official-friend-snapshot.js";
+import {
+  isOfficialAuthFailure,
+  officialSessionExpiredError,
+  OFFICIAL_SESSION_EXPIRED_ERROR_NAME,
+} from "./official-auth-failure.js";
+import {
+  downloadIncomingMedia,
+  MAX_INCOMING_MEDIA_LAYERS,
+} from "./incoming-media-download.js";
 
 if (parentPort === null) throw new Error("Official messaging Worker host requires a parent port");
 const data = workerData as {
@@ -207,20 +216,24 @@ async function resolveIncomingMedia(
     }[]>;
   };
   const layers = await mediaModule.V(mediaInfo, context);
+  if (layers.length > MAX_INCOMING_MEDIA_LAYERS) {
+    throw new Error("Official media resolver exceeded the layer limit");
+  }
   const resolved = [];
   for (const layer of layers) {
     if (typeof layer.dataUrl !== "string") throw new Error("Official media resolver returned no URL");
-    const response = await nativeFetch(layer.dataUrl);
-    if (!response.ok) throw new Error(`Official media download failed with status ${response.status}`);
-    resolved.push({
-      bytes: new Uint8Array(await response.arrayBuffer()),
-      mimeType: response.headers.get("content-type") ?? "application/octet-stream",
-      ...(typeof layer.mediaLayerType === "number" ? { mediaLayerType: layer.mediaLayerType } : {}),
-      hasAudio: Boolean(layer.hasAudio),
-      ...(typeof layer.width === "number" ? { width: layer.width } : {}),
-      ...(typeof layer.height === "number" ? { height: layer.height } : {}),
-    });
-    if (typeof URL.revokeObjectURL === "function") URL.revokeObjectURL(layer.dataUrl);
+    try {
+      const downloaded = await downloadIncomingMedia(layer.dataUrl, networkBoundary.fetch);
+      resolved.push({
+        ...downloaded,
+        ...(typeof layer.mediaLayerType === "number" ? { mediaLayerType: layer.mediaLayerType } : {}),
+        hasAudio: Boolean(layer.hasAudio),
+        ...(typeof layer.width === "number" ? { width: layer.width } : {}),
+        ...(typeof layer.height === "number" ? { height: layer.height } : {}),
+      });
+    } finally {
+      if (typeof URL.revokeObjectURL === "function") URL.revokeObjectURL(layer.dataUrl);
+    }
   }
   return resolved;
 }
@@ -271,37 +284,23 @@ async function syncFriends(accountId: string | undefined): Promise<unknown> {
       throw new Error("Official friend store is not initialized");
     }
     stage = "sync-friends";
+    networkBoundary.drainObservedRequests();
     try {
       await (before as { syncFriends: () => Promise<void> }).syncFriends();
     } catch (error) {
       const observed = networkBoundary.drainObservedRequests();
-      const summary = observed.map((request) => {
-        const pathname = (() => {
-          try { return new URL(request.path).pathname; } catch { return "<invalid-path>"; }
-        })();
-        const result = request.responseStatus === undefined
-          ? [request.errorReason, request.errorCode].filter(
-            (value): value is string => value !== undefined,
-          ).join(" ") || "no-response"
-          : String(request.responseStatus);
-        return `${request.method} ${pathname} ${result}`;
-      }).join(", ");
-      throw new Error(
-        `Official friend sync failed: ${error instanceof Error ? error.message : "unknown error"}${summary === "" ? "" : ` [${summary}]`}`,
-      );
+      if (isOfficialAuthFailure(error, observed)) throw officialSessionExpiredError();
+      throw new Error("Official friend synchronization failed");
     }
     stage = "serialize-friends";
     const user = userStore?.getState().user;
     return serializeOfficialFriendState(user, new Date().toISOString());
   } catch (error) {
-    if (error instanceof Error && error.message.startsWith("Official friend sync failed:")) throw error;
-    const stack = error instanceof Error && typeof error.stack === "string"
-      ? error.stack.split("\n").slice(0, 4).join(" <- ")
-      : "";
-    throw new Error(
-      `Official friend sync failed at ${stage}: ${error instanceof Error ? error.message : "unknown error"}` +
-      (stack === "" ? "" : ` [stack=${stack}]`),
-    );
+    if (error instanceof Error && (
+      error.name === OFFICIAL_SESSION_EXPIRED_ERROR_NAME ||
+      error.message === "Official friend synchronization failed"
+    )) throw error;
+    throw new Error(`Official friend synchronization failed at ${stage}`);
   }
 }
 

@@ -29,9 +29,15 @@
       boundary; this phase does not send, accept, delete, or block friend
       requests.
     - Incoming text is emitted only by the explicit `chat watch` command and
-      incoming Snap media is written only by the explicit `snap watch` command to
-      its selected output directory, after the official runtime state has been
-    atomically persisted. Media bytes are not logged or printed. Unknown or
-    malformed protected content is not exposed.
+      incoming Snap media is resolved only while an explicit `snap watch`
+      subscription is active. Media downloads use the runtime network guard;
+      message, media-reference, pending-queue, resolved-layer, and byte work is
+      bounded before media is written to the selected output directory. Runtime
+      state is persisted before emission. Media bytes are not logged or printed.
+      Unknown or malformed protected content is not exposed.
+- Live diagnostics are bound to the configured session, account, and build.
+  The auth-renewal verification fixture must also match the configured session
+  export epoch and remain beside the ignored session file; unbound or stale
+  fixtures are rejected before network traffic.
 - `.env`, `private/`, HARs, assets, raw payloads, images, logs, build output, and
   coverage output remain ignored by Git.

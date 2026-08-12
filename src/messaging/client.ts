@@ -35,6 +35,7 @@ interface MessagingRuntime {
   }): Promise<EncryptedContent>;
   exportState(): Promise<CryptoStateExport>;
   syncMessages(): Promise<void>;
+  setSnapWatchActive(active: boolean): Promise<void>;
   drainChatMessages(): Promise<readonly ChatMessage[]>;
   drainSnapMessages?(): Promise<readonly IncomingSnap[]>;
 }
@@ -175,32 +176,38 @@ export class MessagingClient {
       if (drainSnapMessages === undefined) {
         throw new AppError("UNSUPPORTED_BUILD", "Incoming Snap media is not available");
       }
-      while (!signal?.aborted) {
-        const messages = await drainSnapMessages.call(dependencies.runtime);
-        if (messages.length === 0) {
-          await new Promise<void>((resolve) => {
-            let timer: ReturnType<typeof setTimeout>;
-            const onAbort = () => {
-              clearTimeout(timer);
-              resolve();
-            };
-            timer = setTimeout(() => {
-              signal?.removeEventListener("abort", onAbort);
-              resolve();
-            }, delayMs);
-            signal?.addEventListener("abort", onAbort, { once: true });
-            if (signal?.aborted) onAbort();
-          });
-          continue;
+      await dependencies.runtime.setSnapWatchActive(true);
+      try {
+        await dependencies.runtime.syncMessages();
+        while (!signal?.aborted) {
+          const messages = await drainSnapMessages.call(dependencies.runtime);
+          if (messages.length === 0) {
+            await new Promise<void>((resolve) => {
+              let timer: ReturnType<typeof setTimeout>;
+              const onAbort = () => {
+                clearTimeout(timer);
+                resolve();
+              };
+              timer = setTimeout(() => {
+                signal?.removeEventListener("abort", onAbort);
+                resolve();
+              }, delayMs);
+              signal?.addEventListener("abort", onAbort, { once: true });
+              if (signal?.aborted) onAbort();
+            });
+            continue;
+          }
+          for (const message of messages) {
+            if (signal?.aborted) return;
+            if (seen.has(message.messageId)) continue;
+            const state = await dependencies.runtime.exportState();
+            await dependencies.stateStore.write(state);
+            seen.add(message.messageId);
+            yield message;
+          }
         }
-        for (const message of messages) {
-          if (signal?.aborted) return;
-          if (seen.has(message.messageId)) continue;
-          const state = await dependencies.runtime.exportState();
-          await dependencies.stateStore.write(state);
-          seen.add(message.messageId);
-          yield message;
-        }
+      } finally {
+        await dependencies.runtime.setSnapWatchActive(false);
       }
     })();
   }

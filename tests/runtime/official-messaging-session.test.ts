@@ -63,6 +63,26 @@ describe("official messaging session", () => {
     }
   });
 
+  it("maps a worker-boundary Friends authorization failure to a sanitized session expiry", async () => {
+    const client = new OfficialWorkerClient({
+      assetDir: ".",
+      workerUrl: new URL("../fixtures/official-session-expired-worker.mjs", import.meta.url),
+    });
+    try {
+      await client.initializeWasm(session());
+      const error = await client.syncFriends().catch((value: unknown) => value);
+
+      expect(error).toMatchObject({
+        code: "SESSION_EXPIRED",
+        message: "Official friend synchronization was unauthorized",
+        details: {},
+      });
+      expect(JSON.stringify(error)).not.toContain("raw-transport-secret");
+    } finally {
+      await client.shutdown();
+    }
+  });
+
   it("rejects initialization when the official Worker fails before ready", async () => {
     const client = new OfficialWorkerClient({
       assetDir: ".",

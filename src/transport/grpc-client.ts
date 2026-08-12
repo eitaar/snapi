@@ -94,8 +94,10 @@ export class GrpcWebClient {
     const body = encodeDataFrame(payload);
     const requestBody = new ArrayBuffer(body.length);
     new Uint8Array(requestBody).set(body);
+    let refreshConsumed = false;
     for (let attempt = 0; attempt < 2; attempt += 1) {
       const auth = await this.options.auth.getRequestAuth();
+      refreshConsumed ||= auth.refreshConsumed === true;
       const headers = new Headers({
         accept: "application/grpc-web+proto",
         authorization: `Bearer ${auth.httpToken}`,
@@ -126,8 +128,14 @@ export class GrpcWebClient {
       }
 
       const httpRefresh = refreshReason(response.status);
-      if (httpRefresh !== undefined && attempt === 0 && canReplayAfterHttpAuthFailure(options)) {
+      if (
+        httpRefresh !== undefined &&
+        attempt === 0 &&
+        !refreshConsumed &&
+        canReplayAfterHttpAuthFailure(options)
+      ) {
         await this.options.auth.refreshOnce(httpRefresh);
+        refreshConsumed = true;
         continue;
       }
       if (response.status === 429) {
@@ -162,8 +170,14 @@ export class GrpcWebClient {
       }
       const grpcStatus = Number(grpcStatusText);
       const grpcRefresh = refreshReason(response.status, grpcStatus);
-      if (grpcRefresh !== undefined && attempt === 0 && canReplayAfterHttpAuthFailure(options)) {
+      if (
+        grpcRefresh !== undefined &&
+        attempt === 0 &&
+        !refreshConsumed &&
+        canReplayAfterHttpAuthFailure(options)
+      ) {
         await this.options.auth.refreshOnce(grpcRefresh);
+        refreshConsumed = true;
         continue;
       }
       if (grpcStatus !== 0) {

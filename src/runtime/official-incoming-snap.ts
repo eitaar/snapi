@@ -1,5 +1,9 @@
 import type { IncomingSnapMediaInfo } from "./content-types.js";
 
+export const MAX_MEDIA_INFOS_PER_SNAP = 8;
+export const MAX_PLAYBACK_LAYERS_PER_SNAP = 32;
+export const MAX_INCOMING_SNAP_MESSAGES_PER_UPDATE = 64;
+
 export interface OfficialIncomingSnapCandidate {
   readonly senderId: string;
   readonly conversationId: string;
@@ -72,7 +76,10 @@ export function extractOfficialMediaInfos(value: unknown): IncomingSnapMediaInfo
   const playback = record(snapdoc.playback);
   const characteristics = record(playback?.playbackCharacteristics);
   const infos: IncomingSnapMediaInfo[] = [];
-  for (const layer of playback?.playbackLayers ?? []) {
+  const layers = Array.isArray(playback?.playbackLayers)
+    ? playback.playbackLayers.slice(0, MAX_PLAYBACK_LAYERS_PER_SNAP)
+    : [];
+  for (const layer of layers) {
     const layerRecord = record(layer);
     const mediaLayer = record(layerRecord?.layer);
     if (mediaLayer?.$case !== "media") continue;
@@ -90,6 +97,7 @@ export function extractOfficialMediaInfos(value: unknown): IncomingSnapMediaInfo
       },
       mediaReference: reference,
     });
+    if (infos.length === MAX_MEDIA_INFOS_PER_SNAP) break;
   }
   return infos;
 }
@@ -100,7 +108,7 @@ export function normalizeOfficialIncomingSnapMessages(
   receivedAt = new Date().toISOString(),
 ): OfficialIncomingSnapCandidate[] {
   const normalized: OfficialIncomingSnapCandidate[] = [];
-  for (const value of messages) {
+  for (const value of messages.slice(0, MAX_INCOMING_SNAP_MESSAGES_PER_UPDATE)) {
     try {
       const message = record(value);
       const descriptor = record(message?.descriptor);

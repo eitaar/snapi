@@ -66,19 +66,53 @@ function probeRequest() {
   };
 }
 
+function probeFixture() {
+  return {
+    binding: {
+      accountId: session().accountId,
+      buildId: session().buildId,
+      sessionExportedAt: session().exportedAt,
+    },
+    request: probeRequest(),
+  };
+}
+
 function dependencies(
   overrides: Partial<CliAuthRenewalDependencies> = {},
 ): CliAuthRenewalDependencies {
   return {
     config: config(),
     session: session(),
-    readProbeRequest: async () => probeRequest(),
+    readProbeFixture: async () => probeFixture(),
     now: () => new Date("2026-08-12T01:02:03.000Z"),
     ...overrides,
   };
 }
 
 describe("runCliAuthRenewalProbe", () => {
+  it("rejects an identity-unbound protected request before any network call", async () => {
+    const fetch = vi.fn();
+
+    await expect(runCliAuthRenewalProbe(dependencies({
+      fetch,
+      readProbeFixture: async () => probeRequest(),
+    }))).rejects.toMatchObject({ code: "INVALID_CONFIG" });
+    expect(fetch).not.toHaveBeenCalled();
+  });
+
+  it("rejects a protected request bound to another session epoch", async () => {
+    const fetch = vi.fn();
+
+    await expect(runCliAuthRenewalProbe(dependencies({
+      fetch,
+      readProbeFixture: async () => ({
+        ...probeFixture(),
+        binding: { ...probeFixture().binding, sessionExportedAt: "2026-08-11T00:00:00.000Z" },
+      }),
+    }))).rejects.toMatchObject({ code: "INVALID_CONFIG" });
+    expect(fetch).not.toHaveBeenCalled();
+  });
+
   it("reports renewed after one refresh and one read-only verification request", async () => {
     const refreshedToken = "r".repeat(96);
     const fetch = vi.fn(async (input: string | URL | Request, init?: RequestInit) => {

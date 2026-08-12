@@ -46,6 +46,15 @@ const WEB_COOKIE_PATHS = new Set([
   "/com.snapchat.atlas.gw.AtlasGw/SyncFriendData",
   "/snapchat.friending.server.FriendRequests/IncomingFriendSync",
 ]);
+const MAX_OBSERVED_REQUESTS = 256;
+
+function pushObserved(
+  observed: ObservedOfficialRequest[],
+  value: ObservedOfficialRequest,
+): void {
+  if (observed.length === MAX_OBSERVED_REQUESTS) observed.shift();
+  observed.push(value);
+}
 
 function safeErrorCode(error: unknown): string | undefined {
   if (error === null || typeof error !== "object") return undefined;
@@ -166,12 +175,12 @@ export function createOfficialNetworkBoundary(
           }
         }
         const response = await networkFetch(networkInput, networkInit);
-        observed.push({ path, method: requestMethod, responseStatus: response.status });
+        pushObserved(observed, { path, method: requestMethod, responseStatus: response.status });
         return response;
       } catch (error) {
         const errorCode = safeErrorCode(error);
         const errorReason = safeErrorReason(error);
-        observed.push({
+        pushObserved(observed, {
           path,
           method: requestMethod,
           errorName: error instanceof Error ? error.name : "UnknownError",

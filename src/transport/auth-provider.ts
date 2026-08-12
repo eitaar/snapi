@@ -4,6 +4,7 @@ export interface RequestAuth {
   readonly httpToken: string;
   readonly cookieHeader: string;
   readonly headers: Readonly<Record<string, string>>;
+  readonly refreshConsumed?: true;
 }
 
 export type AuthRefreshReason =
@@ -34,11 +35,12 @@ export class AuthProvider implements RequestAuthSource {
     this.current = session;
   }
 
-  private requestAuth(): RequestAuth {
+  private requestAuth(refreshConsumed = false): RequestAuth {
     return {
       httpToken: this.current.auth.httpToken,
       cookieHeader: this.current.auth.cookieHeader,
       headers: this.current.auth.requestHeaders,
+      ...(refreshConsumed ? { refreshConsumed: true as const } : {}),
     };
   }
 
@@ -62,7 +64,7 @@ export class AuthProvider implements RequestAuthSource {
       const refreshed = await this.dependencies.refresh(this.current);
       await this.dependencies.persist?.(refreshed);
       this.current = refreshed;
-      return this.requestAuth();
+      return this.requestAuth(true);
     })().finally(() => {
       this.refreshPromise = undefined;
     });

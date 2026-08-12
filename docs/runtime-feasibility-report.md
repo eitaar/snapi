@@ -33,6 +33,11 @@ is opt-in and read-only. It permits at most one CLI-only renewal attempt plus
 one read-only verification request, does not persist refreshed session state,
 and emits only sanitized result/status/capability metadata.
 
+The read-only verification fixture is accepted only from the configured
+session directory as `edge-delta-probe.json`, with exact non-secret bindings
+for the configured account, build, and session `exportedAt` epoch. Missing,
+legacy-unbound, stale, or mismatched fixtures fail before network traffic.
+
 Interpret the result values as follows:
 
 - `renewed`: this diagnostic execution completed one local refresh and the one

@@ -1,5 +1,6 @@
 import { readFile as readFileFromDisk } from "node:fs/promises";
-import { loadEnvironmentFile } from "../../config.js";
+import { resolve } from "node:path";
+import { loadConfig, loadEnvironmentFile, type AppConfig } from "../../config.js";
 import { AppError } from "../../errors.js";
 import { parseJsonWithBytes } from "../../session/binary-json.js";
 import { parseSessionExport } from "../../session/schema.js";
@@ -11,6 +12,7 @@ export interface DebugAuthGapDependencies {
   readonly fetch?: typeof globalThis.fetch;
   readonly now?: () => Date;
   readonly env?: NodeJS.ProcessEnv;
+  readonly config?: AppConfig;
 }
 
 function invalid(message: string): AppError {
@@ -102,13 +104,23 @@ export async function runDebugAuthGap(
     throw new AppError("INVALID_CONFIG", "Set SNAP_LIVE_TESTS=1 to run the read-only auth-gap probe");
   }
 
+  const config = dependencies.config ?? loadConfig(env);
   const args = parseArgs(argv);
+  if (resolve(args.sessionPath) !== resolve(config.sessionFile)) {
+    throw invalid("Auth-gap --session must be the configured session file");
+  }
   const readFile = dependencies.readFile ?? (async (path: string) => {
     const bytes = await readFileFromDisk(path);
     return new Uint8Array(bytes.buffer, bytes.byteOffset, bytes.byteLength);
   });
+  const session = parseSessionExport(await readJson(config.sessionFile, readFile));
+  if (session.accountId !== config.accountId) {
+    throw invalid("Auth-gap session account does not match the configured account");
+  }
+  if (session.buildId !== config.buildId) {
+    throw invalid("Auth-gap session build does not match the configured build");
+  }
   const request = parseRequest(await readJson(args.requestPath, readFile));
-  const session = parseSessionExport(await readJson(args.sessionPath, readFile));
   const observation = await runReadOnlyAuthProbe({
     authEpoch: args.authEpoch,
     mode: args.mode,

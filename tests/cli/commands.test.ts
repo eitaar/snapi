@@ -246,7 +246,11 @@ describe("CLI commands", () => {
       ["private/request.json", new TextEncoder().encode(JSON.stringify(request))],
       ["private/session.json", new TextEncoder().encode(JSON.stringify(session))],
     ]);
-    const readFile = vi.fn(async (path: string) => encoded.get(path)!);
+    const readFile = vi.fn(async (path: string) => {
+      const normalized = path.replaceAll("\\", "/");
+      if (normalized.endsWith("/private/session.json")) return encoded.get("private/session.json")!;
+      return encoded.get(path)!;
+    });
     const fetch = vi.fn(async (_url: string | URL | Request, init?: RequestInit) => {
       const headers = new Headers(init?.headers);
       expect(headers.get("authorization")).toBe("Bearer session-token-must-not-echo");
@@ -263,7 +267,14 @@ describe("CLI commands", () => {
       readFile,
       fetch,
       now: () => new Date("2026-08-11T01:00:00.000Z"),
-      env: { SNAP_LIVE_TESTS: "1" },
+      env: {
+        SNAP_LIVE_TESTS: "1",
+        SNAP_SESSION_FILE: "private/session.json",
+        SNAP_ASSET_DIR: "private/assets",
+        SNAP_ACCOUNT_ID: "account-1",
+        SNAP_BUILD_ID: "8dd50222",
+        SNAP_OUTPUT: "json",
+      },
     });
 
     expect(code).toBe(0);
@@ -274,5 +285,85 @@ describe("CLI commands", () => {
     });
     expect(output.stdout.join("\n")).not.toContain("must-not-echo");
     expect(fetch).toHaveBeenCalledOnce();
+  });
+
+  it("rejects auth-gap use of a session file outside the configured session", async () => {
+    const output = io();
+    const readFile = vi.fn();
+    const fetch = vi.fn();
+
+    const code = await main([
+      "debug", "auth-gap",
+      "--request", "private/request.json",
+      "--session", "private/other-session.json",
+      "--mode", "node-bearer",
+      "--auth-epoch", "edge-capture-1",
+    ], output.value, {
+      readFile,
+      fetch,
+      env: {
+        SNAP_LIVE_TESTS: "1",
+        SNAP_SESSION_FILE: "private/session.json",
+        SNAP_ASSET_DIR: "private/assets",
+        SNAP_ACCOUNT_ID: "account-1",
+        SNAP_BUILD_ID: "8dd50222",
+      },
+    });
+
+    expect(code).toBe(3);
+    expect(output.stderr.join("\n")).toContain("configured session");
+    expect(readFile).not.toHaveBeenCalled();
+    expect(fetch).not.toHaveBeenCalled();
+  });
+
+  it("rejects auth-gap credentials from another configured account", async () => {
+    const output = io();
+    const mismatchedSession = {
+      formatVersion: 1,
+      accountId: "other-account",
+      buildId: "8dd50222",
+      exportedAt: "2026-08-11T00:00:00.000Z",
+      auth: {
+        httpToken: "other-account-token-secret",
+        gatewayToken: "other-account-gateway-secret",
+        cookieHeader: "other-account-cookie-secret",
+        requestHeaders: {},
+      },
+      assets: [],
+      localStorage: {},
+      indexedDb: { databases: [] },
+    };
+    const request = {
+      url: "https://web.snapchat.com/messagingcoreservice.MessagingCoreService/DeltaSync",
+      method: "POST",
+      headers: {},
+      bodyBase64: Buffer.from([1]).toString("base64"),
+    };
+    const readFile = vi.fn(async (path: string) =>
+      new TextEncoder().encode(JSON.stringify(path.includes("request") ? request : mismatchedSession)));
+    const fetch = vi.fn();
+
+    const code = await main([
+      "debug", "auth-gap",
+      "--request", "private/request.json",
+      "--session", "private/session.json",
+      "--mode", "node-bearer",
+      "--auth-epoch", "edge-capture-1",
+    ], output.value, {
+      readFile,
+      fetch,
+      env: {
+        SNAP_LIVE_TESTS: "1",
+        SNAP_SESSION_FILE: "private/session.json",
+        SNAP_ASSET_DIR: "private/assets",
+        SNAP_ACCOUNT_ID: "account-1",
+        SNAP_BUILD_ID: "8dd50222",
+      },
+    });
+
+    expect(code).toBe(3);
+    expect(fetch).not.toHaveBeenCalled();
+    expect(output.stderr.join("\n")).not.toContain("other-account-token-secret");
+    expect(output.stderr.join("\n")).not.toContain("other-account-cookie-secret");
   });
 });

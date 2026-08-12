@@ -1,5 +1,7 @@
-import { describe, expect, it } from "vitest";
+import { describe, expect, it, vi } from "vitest";
 import {
+  MAX_INCOMING_SNAP_MESSAGES_PER_UPDATE,
+  MAX_MEDIA_INFOS_PER_SNAP,
   extractOfficialMediaInfos,
   normalizeOfficialIncomingSnapMessages,
 } from "../../src/runtime/official-incoming-snap.js";
@@ -64,5 +66,35 @@ describe("official incoming Snap decoding", () => {
       mediaInfos: [],
     }]);
     expect(JSON.stringify(snapdoc)).not.toContain("protected-snap");
+  });
+
+  it("bounds media layers and protected-message decoding work", () => {
+    const mediaReference = { mediaListId: "0" };
+    const playbackLayers = Array.from({ length: MAX_MEDIA_INFOS_PER_SNAP + 1 }, () => ({
+      layer: {
+        $case: "media",
+        media: { mediaId: { mediaListId: "0" }, type: 0 },
+      },
+    }));
+    expect(extractOfficialMediaInfos({
+      mediaReferences: [mediaReference],
+      playback: { playbackLayers },
+    })).toHaveLength(MAX_MEDIA_INFOS_PER_SNAP);
+
+    const decode = vi.fn(() => ({
+      content: {
+        $case: "snapdoc",
+        snapdoc: { mediaReferences: [], playback: { playbackLayers: [] } },
+      },
+    }));
+    const messages = Array.from({ length: MAX_INCOMING_SNAP_MESSAGES_PER_UPDATE + 1 }, (_, index) => ({
+      descriptor: { messageId: { str: `message-${index}` }, conversationId: { str: "conversation" } },
+      senderId: { str: "sender" },
+      messageContent: "protected",
+    }));
+
+    expect(normalizeOfficialIncomingSnapMessages(messages, decode))
+      .toHaveLength(MAX_INCOMING_SNAP_MESSAGES_PER_UPDATE);
+    expect(decode).toHaveBeenCalledTimes(MAX_INCOMING_SNAP_MESSAGES_PER_UPDATE);
   });
 });

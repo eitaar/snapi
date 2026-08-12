@@ -150,6 +150,10 @@ export class ContentRuntimeClient {
     return this.call({ method: "syncMessages" });
   }
 
+  setSnapWatchActive(active: boolean): Promise<void> {
+    return this.call({ method: "setSnapWatchActive", active });
+  }
+
   drainChatMessages(): Promise<readonly ChatMessage[]> {
     return this.call({ method: "drainChatMessages" });
   }

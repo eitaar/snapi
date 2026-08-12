@@ -6,6 +6,7 @@ import type { IncomingSnapMediaInfo } from "./content-types.js";
 import { syncOfficialFriends } from "./official-host-control.js";
 import type { FriendSnapshot } from "../friends/types.js";
 import type { RuntimeAuthUpdate } from "./protocol.js";
+import { OFFICIAL_SESSION_EXPIRED_ERROR_NAME } from "./official-auth-failure.js";
 
 interface SerializedValue {
   readonly type: "RAW" | "HANDLER";
@@ -191,6 +192,13 @@ export class OfficialRemote {
       return;
     }
     const thrown = response.value as { readonly value?: { readonly name?: string; readonly message?: string } } | undefined;
+    if (thrown?.value?.name === OFFICIAL_SESSION_EXPIRED_ERROR_NAME) {
+      pending.reject(new AppError(
+        "SESSION_EXPIRED",
+        "Official friend synchronization was unauthorized",
+      ));
+      return;
+    }
     pending.reject(new AppError("CRYPTO_RUNTIME_FAILED", "Official messaging Worker call failed", {
       errorName: thrown?.value?.name ?? "UnknownError",
       safeMessage: thrown?.value?.message ?? "Worker call failed",
@@ -482,6 +490,13 @@ export class OfficialWorkerClient {
       return;
     }
     const thrown = response.value as { readonly value?: { readonly name?: string; readonly message?: string } } | undefined;
+    if (thrown?.value?.name === OFFICIAL_SESSION_EXPIRED_ERROR_NAME) {
+      pending.reject(new AppError(
+        "SESSION_EXPIRED",
+        "Official friend synchronization was unauthorized",
+      ));
+      return;
+    }
     pending.reject(new AppError("CRYPTO_RUNTIME_FAILED", "Official messaging Worker call failed", {
       errorName: thrown?.value?.name ?? "UnknownError",
       safeMessage: thrown?.value?.message ?? "Worker call failed",

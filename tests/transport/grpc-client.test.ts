@@ -1,5 +1,7 @@
 import { describe, expect, it, vi } from "vitest";
 import { AppError } from "../../src/errors.js";
+import type { SessionExport } from "../../src/session/types.js";
+import { AuthProvider } from "../../src/transport/auth-provider.js";
 import { GrpcWebClient } from "../../src/transport/grpc-client.js";
 import { encodeDataFrame, encodeTrailerFrame } from "../../src/wire/grpc-web.js";
 import { concatBytes } from "../../src/wire/protobuf.js";
@@ -88,6 +90,84 @@ describe("GrpcWebClient", () => {
     expect(source.refreshOnce).toHaveBeenCalledWith({ kind: "http", status: 401 });
     expect(fetch).toHaveBeenCalledTimes(2);
   });
+
+  it.each([401, 403] as const)(
+    "does not spend a second refresh after proactive renewal followed by HTTP %s",
+    async (status) => {
+      const expired: SessionExport = {
+        formatVersion: 1,
+        accountId: "account",
+        buildId: "8dd50222",
+        exportedAt: "2026-08-11T00:00:00.000Z",
+        auth: {
+          httpToken: "expired-token",
+          gatewayToken: "gateway-token",
+          cookieHeader: "web-cookie",
+          requestHeaders: {},
+        },
+        assets: [],
+        localStorage: {},
+        indexedDb: { databases: [] },
+      };
+      const refresh = vi.fn(async (value: SessionExport): Promise<SessionExport> => ({
+        ...value,
+        exportedAt: "2026-08-12T00:00:00.000Z",
+        auth: { ...value.auth, httpToken: "renewed-token" },
+      }));
+      const provider = new AuthProvider(expired, {
+        refresh,
+        now: () => Date.parse("2026-08-12T00:00:00.000Z"),
+      });
+      const fetch = vi.fn(async () => new Response(null, { status }));
+      const client = new GrpcWebClient({ auth: provider, fetch });
+
+      await expect(client.unary("service.Name", "Method", new Uint8Array(), readOnlyOptions))
+        .rejects.toMatchObject({ code: "NETWORK_FAILED", details: { status } });
+      expect(refresh).toHaveBeenCalledOnce();
+      expect(fetch).toHaveBeenCalledOnce();
+    },
+  );
+
+  it.each([7, 16] as const)(
+    "does not spend a second refresh after proactive renewal followed by gRPC %s",
+    async (grpcStatus) => {
+      const expired: SessionExport = {
+        formatVersion: 1,
+        accountId: "account",
+        buildId: "8dd50222",
+        exportedAt: "2026-08-11T00:00:00.000Z",
+        auth: {
+          httpToken: "expired-token",
+          gatewayToken: "gateway-token",
+          cookieHeader: "web-cookie",
+          requestHeaders: {},
+        },
+        assets: [],
+        localStorage: {},
+        indexedDb: { databases: [] },
+      };
+      const refresh = vi.fn(async (value: SessionExport): Promise<SessionExport> => ({
+        ...value,
+        exportedAt: "2026-08-12T00:00:00.000Z",
+        auth: { ...value.auth, httpToken: "renewed-token" },
+      }));
+      const provider = new AuthProvider(expired, {
+        refresh,
+        now: () => Date.parse("2026-08-12T00:00:00.000Z"),
+      });
+      const unauthenticated = concatBytes(
+        encodeDataFrame(new Uint8Array()),
+        encodeTrailerFrame(new Map([["grpc-status", String(grpcStatus)]])),
+      );
+      const fetch = vi.fn(async () => new Response(body(unauthenticated), { status: 200 }));
+      const client = new GrpcWebClient({ auth: provider, fetch });
+
+      await expect(client.unary("service.Name", "Method", new Uint8Array(), readOnlyOptions))
+        .rejects.toMatchObject({ code: "GRPC_FAILED", details: { grpcStatus } });
+      expect(refresh).toHaveBeenCalledOnce();
+      expect(fetch).toHaveBeenCalledOnce();
+    },
+  );
 
   it("refreshes once on HTTP 403 and retries an idempotent request", async () => {
     const source = auth();

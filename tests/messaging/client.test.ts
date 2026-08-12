@@ -19,6 +19,9 @@ function dependencies(events: string[]) {
         return { localStorage: {}, sessionStorage: {}, indexedDb: { databases: [] } };
       }),
       syncMessages: vi.fn(async () => { events.push("sync"); }),
+      setSnapWatchActive: vi.fn(async (active: boolean) => {
+        events.push(active ? "snap-watch-active" : "snap-watch-inactive");
+      }),
       drainChatMessages: vi.fn(async (): Promise<readonly ChatMessage[]> => []),
       drainSnapMessages: vi.fn(async (): Promise<readonly IncomingSnap[]> => []),
     },
@@ -187,9 +190,11 @@ describe("MessagingClient", () => {
       value: snap,
       done: false,
     });
-    expect(events).toEqual(["export", "persist"]);
+    expect(events).toEqual(["snap-watch-active", "sync", "export", "persist"]);
+    expect(deps.runtime.syncMessages).toHaveBeenCalledOnce();
     expect(deps.runtime.exportState).toHaveBeenCalledOnce();
     await iterator.return?.();
+    expect(events.at(-1)).toBe("snap-watch-inactive");
   });
 
   it("ends message watching promptly when cancelled", async () => {
