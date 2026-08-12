@@ -55,6 +55,7 @@ export interface SessionExport {
     readonly httpToken: string;
     readonly gatewayToken: string;
     readonly tokenRefreshedAt?: string;
+    readonly gatewayTokenCapturedAt?: string;
     readonly webSessionRefreshedAt?: string;
     readonly cookieHeader: string;
     readonly ssoCookieHeader?: string;

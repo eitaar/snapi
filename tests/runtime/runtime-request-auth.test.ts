@@ -27,6 +27,7 @@ describe("RuntimeRequestAuth", () => {
     const update: RuntimeAuthUpdate = {
       accountId: "account",
       httpToken: "updated-http-token",
+      gatewayToken: "updated-gateway-token",
       cookieHeader: "updated-cookie",
       ssoCookieHeader: "updated-sso-cookie",
       mcsCofSequenceIds: "updated-cof",

@@ -13,8 +13,12 @@ const session: SessionExport = {
   indexedDb: { databases: [] },
 };
 
-function har(cookie = "account-session=secret", scuid = session.accountId): unknown {
-  const token = "t".repeat(96);
+function har(
+  cookie = "account-session=secret",
+  scuid = session.accountId,
+  messagingToken = "t".repeat(96),
+  gatewayToken = messagingToken,
+): unknown {
   return {
     log: {
       entries: [
@@ -48,7 +52,7 @@ function har(cookie = "account-session=secret", scuid = session.accountId): unkn
           request: {
             method: "GET",
             url: "wss://aws.duplex.snapchat.com/snapchat.gateway.Gateway/WebSocketConnect",
-            headers: [{ name: "Sec-WebSocket-Protocol", value: `snap-ws-auth, ${token}` }],
+            headers: [{ name: "Sec-WebSocket-Protocol", value: `snap-ws-auth, ${gatewayToken}` }],
           },
           response: { status: 101, headers: [] },
         },
@@ -58,7 +62,7 @@ function har(cookie = "account-session=secret", scuid = session.accountId): unkn
             method: "POST",
             url: "https://web.snapchat.com/messagingcoreservice.MessagingCoreService/GetGroups",
             headers: [
-              { name: "Authorization", value: `Bearer ${token}` },
+              { name: "Authorization", value: `Bearer ${messagingToken}` },
               { name: "mcs-cof-ids-bin", value: "fresh-cof" },
               { name: "x-grpc-web", value: "1" },
               { name: "x-snap-client-user-agent", value: "grpc-web-javascript/0.1" },
@@ -73,7 +77,7 @@ function har(cookie = "account-session=secret", scuid = session.accountId): unkn
             method: "POST",
             url: "https://web.snapchat.com/com.snapchat.deltaforce.external.DeltaForce/DeltaSync",
             headers: [
-              { name: "Authorization", value: `Bearer ${token}` },
+              { name: "Authorization", value: `Bearer ${messagingToken}` },
               { name: "Cookie", value: "web=fresh" },
             ],
           },
@@ -85,7 +89,7 @@ function har(cookie = "account-session=secret", scuid = session.accountId): unkn
             method: "POST",
             url: "https://web.snapchat.com/web-chat-session/refresh?client_id=web-calling-corp--prod",
             headers: [
-              { name: "Authorization", value: `Bearer ${token}` },
+              { name: "Authorization", value: `Bearer ${messagingToken}` },
               { name: "Cookie", value: "web=fresh" },
               { name: "Origin", value: "https://www.snapchat.com" },
               { name: "Referer", value: "https://www.snapchat.com/" },
@@ -108,6 +112,7 @@ describe("enrichSessionWithHarAuth", () => {
         httpToken: "t".repeat(96),
         gatewayToken: "t".repeat(96),
         tokenRefreshedAt: "2026-08-11T00:01:02.000Z",
+        gatewayTokenCapturedAt: "2026-08-11T00:01:01.000Z",
         webSessionRefreshedAt: "2026-08-11T00:01:04.000Z",
         cookieHeader: "web=fresh",
         ssoCookieHeader: "account-session=rotated",
@@ -161,11 +166,15 @@ describe("enrichSessionWithHarAuth", () => {
     }
   });
 
-  it("rejects a gateway token that does not match successful Messaging API auth", () => {
-    const value = har() as {
-      log: { entries: Array<{ request: { headers: Array<{ name: string; value: string }> } }> };
-    };
-    value.log.entries[1]!.request.headers[0]!.value = `snap-ws-auth, ${"x".repeat(96)}`;
-    expect(() => enrichSessionWithHarAuth(session, value)).toThrow("gateway authentication");
+  it("preserves a Gateway token that differs from successful Messaging API auth", () => {
+    const messagingToken = "m".repeat(96);
+    const gatewayToken = "g".repeat(96);
+    const refreshed = enrichSessionWithHarAuth(
+      session,
+      har("account-session=secret", session.accountId, messagingToken, gatewayToken),
+    );
+
+    expect(refreshed.auth.httpToken).toBe(messagingToken);
+    expect(refreshed.auth.gatewayToken).toBe(gatewayToken);
   });
 });

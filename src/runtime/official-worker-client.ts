@@ -441,6 +441,7 @@ export class OfficialWorkerClient {
   private accountId: string | undefined;
   private requestAuthState = {
     httpToken: "",
+    gatewayToken: "",
     mcsCofSequenceIds: "",
   };
   constructor(private readonly options: OfficialWorkerClientOptions) {
@@ -533,6 +534,7 @@ export class OfficialWorkerClient {
   private async applyUpdatedAuth(auth: RuntimeAuthUpdate): Promise<void> {
     this.requestAuthState = {
       httpToken: auth.httpToken,
+      gatewayToken: auth.gatewayToken,
       mcsCofSequenceIds: auth.mcsCofSequenceIds,
     };
     await this.apply(["__host", "setWebCookieHeader"], [auth.cookieHeader]);
@@ -544,13 +546,14 @@ export class OfficialWorkerClient {
     const auth: RuntimeAuthUpdate = {
       accountId: session.accountId,
       httpToken: session.auth.httpToken,
+      gatewayToken: session.auth.gatewayToken,
       cookieHeader: session.auth.cookieHeader,
       ssoCookieHeader: session.auth.ssoCookieHeader ?? session.auth.cookieHeader,
       mcsCofSequenceIds: session.auth.requestHeaders["mcs-cof-ids-bin"] ?? "",
     };
     this.accountId = auth.accountId;
     await this.applyUpdatedAuth(auth);
-    await this.apply(["setAuthTokenGetter"], [async () => this.requestAuthState.httpToken]);
+    await this.apply(["setAuthTokenGetter"], [async () => this.requestAuthState.gatewayToken]);
     await this.apply(["setMcsCofSequenceIdsGetter"], [
       async () => this.requestAuthState.mcsCofSequenceIds,
     ]);
@@ -638,7 +641,7 @@ export class OfficialWorkerClient {
     this.exportMessagingStateSnapshot = undefined;
     this.feedManager = undefined;
     this.accountId = undefined;
-    this.requestAuthState = { httpToken: "", mcsCofSequenceIds: "" };
+    this.requestAuthState = { httpToken: "", gatewayToken: "", mcsCofSequenceIds: "" };
     await this.worker.terminate();
   }
 }

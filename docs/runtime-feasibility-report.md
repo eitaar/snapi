@@ -23,3 +23,23 @@
 | wasm_instantiated | passed | 0 |  |  |
 | modules_resolved | passed | 0 |  |  |
 | content_envelope_created | failed | 2 | SESSION_REEXPORT_REQUIRED | Session export is missing login-time messaging key initialization state |
+
+## Gateway / duplex diagnosis
+
+The CLI now supplies the official Worker with the page Origin required by the
+standard Node WebSocket implementation. This is covered by an isolated wrapper
+test; it does not add Cookie, Bearer, DBSC, attestation, user-agent, or TLS
+fingerprint values.
+
+The read-only Gateway handshake probe returned:
+
+| Check | Status | Classification | Protocol category |
+|---|---:|---|---|
+| standard WebSocket Upgrade | 401 | authorization-rejected | snap-ws-auth |
+
+The same session's read-only Friends sync returned HTTP 200. Therefore the
+current failure is not a general HTTP session failure and is not explained by
+the CLI opening Gateway twice. The captured Gateway subprotocol credential is
+rejected by the Gateway endpoint. SSO/Web-session renewal does not produce a
+new Gateway credential; a successful Gateway handshake in a fresh HAR is still
+required. No message or Snap was sent during this diagnosis.

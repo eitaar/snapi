@@ -14,6 +14,7 @@ import {
   downloadIncomingMedia,
   MAX_INCOMING_MEDIA_LAYERS,
 } from "./incoming-media-download.js";
+import { installOfficialWebSocket } from "./official-websocket.js";
 
 if (parentPort === null) throw new Error("Official messaging Worker host requires a parent port");
 const data = workerData as {
@@ -156,6 +157,11 @@ Object.defineProperties(target, {
     configurable: true,
   },
 });
+
+// The official bundle calls the browser WebSocket constructor with only its
+// URL and subprotocols. Node does not synthesize the page Origin header, so
+// install the narrow compatibility wrapper before evaluating the bundle.
+installOfficialWebSocket("https://www.snapchat.com");
 
 function officialWebpackRequire(): ((id: string | number) => unknown) {
   const require = target.__officialWebpackRequire;

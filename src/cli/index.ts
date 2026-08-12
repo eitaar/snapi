@@ -11,6 +11,7 @@ import type { ConfiguredGatewayStatusClient } from "./commands/gateway-status.js
 import type { ConfiguredChatWatchClient } from "./commands/chat-watch.js";
 import type { ConfiguredSnapWatchClient } from "./commands/snap-watch.js";
 import type { ConfiguredFriendsListClient } from "./commands/friends-list.js";
+import { createConfiguredGatewayStatusClient } from "./gateway-status-client.js";
 import { createProcessIo, type CliIo } from "./io.js";
 
 export type ConfiguredCliClient = ConfiguredChatSendClient & ConfiguredGatewayStatusClient &
@@ -21,6 +22,7 @@ export interface CliDependencies {
   readonly runDebugAuthRenewal?: (io: CliIo) => Promise<number>;
   readonly runSessionCheck?: (io: CliIo) => Promise<number>;
   readonly createClient?: () => Promise<ConfiguredCliClient>;
+  readonly createGatewayStatusClient?: () => Promise<ConfiguredGatewayStatusClient>;
   readonly readFile?: (path: string) => Promise<Uint8Array>;
   readonly fetch?: typeof globalThis.fetch;
   readonly now?: () => Date;
@@ -92,6 +94,17 @@ export async function main(
         ...(dependencies.readFile === undefined ? {} : { readFile: dependencies.readFile }),
         ...(dependencies.fetch === undefined ? {} : { fetch: dependencies.fetch }),
         ...(dependencies.now === undefined ? {} : { now: dependencies.now }),
+        ...(dependencies.env === undefined ? {} : { env: dependencies.env }),
+      });
+    } catch (error) {
+      return emitError(io, error);
+    }
+  }
+  if (argv.length >= 2 && argv[0] === "debug" && argv[1] === "gateway-handshake") {
+    try {
+      const runDebugGatewayHandshake = (await import("./commands/debug-gateway-handshake.js"))
+        .runDebugGatewayHandshake;
+      return await runDebugGatewayHandshake(argv.slice(2), io, {
         ...(dependencies.env === undefined ? {} : { env: dependencies.env }),
       });
     } catch (error) {
@@ -186,7 +199,10 @@ export async function main(
   if (argv.length === 2 && argv[0] === "gateway" && argv[1] === "status") {
     try {
       const runGatewayStatus = (await import("./commands/gateway-status.js")).runGatewayStatus;
-      return await runGatewayStatus(io, dependencies.createClient ?? createConfiguredClient);
+      return await runGatewayStatus(
+        io,
+        dependencies.createGatewayStatusClient ?? createConfiguredGatewayStatusClient,
+      );
     } catch (error) {
       return emitError(io, error);
     }

@@ -63,6 +63,16 @@ describe("official messaging session", () => {
     }
   });
 
+  it("passes the captured Gateway token separately from the refreshed HTTP token", async () => {
+    const refreshed = refreshedSession();
+    const update = toRuntimeAuthUpdate(refreshed);
+
+    expect(update).toMatchObject({
+      httpToken: "refreshed-official-http-token",
+      gatewayToken: "refreshed-official-gateway-token",
+    });
+  });
+
   it("maps a worker-boundary Friends authorization failure to a sanitized session expiry", async () => {
     const client = new OfficialWorkerClient({
       assetDir: ".",

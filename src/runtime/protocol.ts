@@ -12,6 +12,7 @@ export interface SerializedAppError {
 export interface RuntimeAuthUpdate {
   readonly accountId: string;
   readonly httpToken: string;
+  readonly gatewayToken: string;
   readonly cookieHeader: string;
   readonly ssoCookieHeader: string;
   readonly mcsCofSequenceIds: string;
@@ -21,6 +22,7 @@ export function toRuntimeAuthUpdate(session: SessionExport): RuntimeAuthUpdate {
   return {
     accountId: session.accountId,
     httpToken: session.auth.httpToken,
+    gatewayToken: session.auth.gatewayToken,
     cookieHeader: session.auth.cookieHeader,
     ssoCookieHeader: session.auth.ssoCookieHeader ?? session.auth.cookieHeader,
     mcsCofSequenceIds: session.auth.requestHeaders["mcs-cof-ids-bin"] ?? "",

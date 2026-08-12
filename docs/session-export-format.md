@@ -45,15 +45,20 @@ token renewal.
 `auth.webSessionRequestHeaders` stores the restricted browser headers observed
 on a successful `POST /web-chat-session/refresh` request.
 `auth.tokenRefreshedAt` and `auth.webSessionRefreshedAt` independently record
-the two renewal clocks.
+the HTTP and Web-session renewal clocks. `auth.gatewayTokenCapturedAt` records
+when the successful Gateway `101` handshake supplied the separate Gateway
+subprotocol token; it is not renewed by the SSO or Web-session heartbeat.
 
 Automatic token renewal runs the pinned official Web Attestation WASM and posts
 the proof with `auth.ssoCookieHeader` to `accounts/sso`. A successful response
-replaces both `httpToken` and `gatewayToken`; this matches the official Web auth
-store. Separately, the CLI repeats the hourly Web-session heartbeat with the
-current `httpToken` and `cookieHeader`. A successful empty response preserves
-both tokens, merges any response `Set-Cookie` values into the Web cookie, and
-advances the heartbeat clock. A rejected renewal requires a fresh login HAR.
+replaces `httpToken`, the Messaging HTTP credential. `gatewayToken` is kept
+separate because a successful browser HAR can contain a different Bearer in
+the Gateway WebSocket subprotocol. The CLI repeats the hourly Web-session
+heartbeat with the current `httpToken` and `cookieHeader`. A successful empty
+response preserves both captured token fields, merges any response
+`Set-Cookie` values into the Web cookie, and advances the heartbeat clock. A
+new successful Gateway handshake in a fresh HAR is required after the captured
+Gateway token expires. A rejected renewal requires a fresh login HAR.
 
 Use `snap session refresh-har <fresh.har>` to extract and persist these values
 as one atomic operation.

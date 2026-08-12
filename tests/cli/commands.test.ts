@@ -140,11 +140,26 @@ describe("CLI commands", () => {
     const output = io();
     const state = configured();
     const code = await main(["gateway", "status"], output.value, {
-      createClient: async () => state,
+      createGatewayStatusClient: async () => state,
     });
     expect(code).toBe(0);
     expect(state.client.watchEvents).toHaveBeenCalledOnce();
     expect(JSON.parse(output.stdout[0]!)).toEqual({ type: "gateway.status", status: "open" });
+    expect(state.client.close).toHaveBeenCalledOnce();
+  });
+
+  it("uses the dedicated Gateway status factory without creating the full messaging client", async () => {
+    const output = io();
+    const state = configured();
+    const createClient = vi.fn(async () => state);
+    const code = await main(["gateway", "status"], output.value, {
+      createClient,
+      createGatewayStatusClient: async () => state,
+    });
+
+    expect(code).toBe(0);
+    expect(createClient).not.toHaveBeenCalled();
+    expect(state.client.watchEvents).toHaveBeenCalledOnce();
     expect(state.client.close).toHaveBeenCalledOnce();
   });
 

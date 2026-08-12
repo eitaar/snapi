@@ -73,6 +73,10 @@ expose(parentPort, {
     officialHttpToken = value;
     return true;
   },
+  "__host.setOfficialGatewayToken": async (value) => {
+    officialGatewayToken = value;
+    return true;
+  },
   "__host.syncFriends": async () => ({
     ...(wasmLoaded ? await (async () => {
       const authToken = authTokenGetter === undefined
@@ -85,7 +89,7 @@ expose(parentPort, {
         webCookieHeader !== refreshedAuthExpectation.webCookieHeader ||
         ssoCookieHeader !== refreshedAuthExpectation.ssoCookieHeader ||
         officialHttpToken !== refreshedAuthExpectation.officialHttpToken ||
-        authToken !== refreshedAuthExpectation.officialHttpToken ||
+        authToken !== "refreshed-official-gateway-token" ||
         mcsCofSequenceIds !== refreshedAuthExpectation.mcsCofSequenceIds
       ) {
         throw new Error("official auth state was not refreshed before the read-only operation");

@@ -212,6 +212,14 @@ export function parseSessionExport(value: unknown): SessionExport {
       ...(auth.tokenRefreshedAt === undefined
         ? {}
         : { tokenRefreshedAt: stringAt(auth.tokenRefreshedAt, "auth.tokenRefreshedAt") }),
+      ...(auth.gatewayTokenCapturedAt === undefined
+        ? {}
+        : {
+            gatewayTokenCapturedAt: stringAt(
+              auth.gatewayTokenCapturedAt,
+              "auth.gatewayTokenCapturedAt",
+            ),
+          }),
       ...(auth.webSessionRefreshedAt === undefined
         ? {}
         : {

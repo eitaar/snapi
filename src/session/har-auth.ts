@@ -242,10 +242,10 @@ export function enrichSessionWithHarAuth(
   const observedGatewayToken = gatewayEntry === undefined
     ? undefined
     : gatewayToken(header(gatewayEntry.request.headers, "sec-websocket-protocol"));
-  if (observedGatewayToken === undefined || observedGatewayToken !== httpToken) {
+  if (observedGatewayToken === undefined) {
     throw new AppError(
       "INVALID_SESSION_EXPORT",
-      "HAR gateway authentication does not match successful Messaging API authentication",
+      "HAR does not contain successful Gateway authentication",
     );
   }
 
@@ -269,6 +269,10 @@ export function enrichSessionWithHarAuth(
   if (tokenCapturedAt === undefined || Number.isNaN(Date.parse(tokenCapturedAt))) {
     throw new AppError("INVALID_SESSION_EXPORT", "HAR Messaging request has no valid capture timestamp");
   }
+  const gatewayTokenCapturedAt = gatewayEntry?.startedDateTime;
+  if (gatewayTokenCapturedAt === undefined || Number.isNaN(Date.parse(gatewayTokenCapturedAt))) {
+    throw new AppError("INVALID_SESSION_EXPORT", "HAR Gateway request has no valid capture timestamp");
+  }
   const capturedAt = latest(
     webSessionEntry === undefined ? [messagingEntry] : [messagingEntry, webSessionEntry],
   )?.startedDateTime;
@@ -283,6 +287,7 @@ export function enrichSessionWithHarAuth(
       httpToken,
       gatewayToken: observedGatewayToken,
       tokenRefreshedAt: new Date(tokenCapturedAt).toISOString(),
+      gatewayTokenCapturedAt: new Date(gatewayTokenCapturedAt).toISOString(),
       ...(webSessionEntry?.startedDateTime === undefined
         ? {}
         : { webSessionRefreshedAt: new Date(webSessionEntry.startedDateTime).toISOString() }),
