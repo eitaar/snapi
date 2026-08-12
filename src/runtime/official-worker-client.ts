@@ -5,6 +5,7 @@ import type { SessionExport } from "../session/types.js";
 import type { IncomingSnapMediaInfo } from "./content-types.js";
 import { syncOfficialFriends } from "./official-host-control.js";
 import type { FriendSnapshot } from "../friends/types.js";
+import type { RuntimeAuthUpdate } from "./protocol.js";
 
 interface SerializedValue {
   readonly type: "RAW" | "HANDLER";
@@ -514,19 +515,26 @@ export class OfficialWorkerClient {
     });
   }
 
-  private async applyUpdatedAuth(session: SessionExport): Promise<void> {
+  private async applyUpdatedAuth(auth: RuntimeAuthUpdate): Promise<void> {
     this.requestAuthState = {
-      httpToken: session.auth.httpToken,
-      mcsCofSequenceIds: session.auth.requestHeaders["mcs-cof-ids-bin"] ?? "",
+      httpToken: auth.httpToken,
+      mcsCofSequenceIds: auth.mcsCofSequenceIds,
     };
-    await this.apply(["__host", "setWebCookieHeader"], [session.auth.cookieHeader]);
-    await this.apply(["__host", "setSsoCookieHeader"], [session.auth.ssoCookieHeader ?? session.auth.cookieHeader]);
-    await this.apply(["__host", "setOfficialHttpToken"], [session.auth.httpToken]);
+    await this.apply(["__host", "setWebCookieHeader"], [auth.cookieHeader]);
+    await this.apply(["__host", "setSsoCookieHeader"], [auth.ssoCookieHeader]);
+    await this.apply(["__host", "setOfficialHttpToken"], [auth.httpToken]);
   }
 
   async initializeWasm(session: SessionExport): Promise<void> {
-    this.accountId = session.accountId;
-    await this.applyUpdatedAuth(session);
+    const auth: RuntimeAuthUpdate = {
+      accountId: session.accountId,
+      httpToken: session.auth.httpToken,
+      cookieHeader: session.auth.cookieHeader,
+      ssoCookieHeader: session.auth.ssoCookieHeader ?? session.auth.cookieHeader,
+      mcsCofSequenceIds: session.auth.requestHeaders["mcs-cof-ids-bin"] ?? "",
+    };
+    this.accountId = auth.accountId;
+    await this.applyUpdatedAuth(auth);
     await this.apply(["setAuthTokenGetter"], [async () => this.requestAuthState.httpToken]);
     await this.apply(["setMcsCofSequenceIdsGetter"], [
       async () => this.requestAuthState.mcsCofSequenceIds,
@@ -539,11 +547,11 @@ export class OfficialWorkerClient {
     ]);
   }
 
-  async updateAuth(session: SessionExport): Promise<void> {
+  async updateAuth(auth: RuntimeAuthUpdate): Promise<void> {
     if (this.accountId === undefined) {
       throw new AppError("CRYPTO_RUNTIME_FAILED", "Official messaging account is not initialized");
     }
-    await this.applyUpdatedAuth(session);
+    await this.applyUpdatedAuth(auth);
   }
 
   async createMessagingSession(args: readonly unknown[]): Promise<OfficialRemote> {

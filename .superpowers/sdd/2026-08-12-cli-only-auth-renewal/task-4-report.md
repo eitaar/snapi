@@ -16,6 +16,8 @@ Implemented the missing runtime auth-update boundary so a refreshed `SessionExpo
 - `tests/client.test.ts`
 - `tests/fixtures/runtime-worker.ts`
 - `tests/fixtures/official-session-contract-worker.mjs`
+- `src/runtime/official-worker-entry.ts`
+- `src/friends/client.ts`
 
 ## RED evidence
 
@@ -58,14 +60,14 @@ Passing result:
 
 ### Runtime protocol boundary
 
-- added `RuntimeCommand | { method: "updateAuth"; session: SessionExport }`
+- added `RuntimeCommand | { method: "updateAuth"; auth: RuntimeAuthUpdate }`
 - added `ContentRuntimeClient.updateAuth(session)`
 - routed the command through `src/runtime/worker-entry.ts` to the nested `OfficialWorkerClient`
 
 ### Official runtime in-memory update
 
 - `OfficialWorkerClient.initializeWasm(session)` now seeds mutable safe auth-getter state
-- `OfficialWorkerClient.updateAuth(session)` updates only:
+- `OfficialWorkerClient.updateAuth(auth)` updates only:
   - `webCookieHeader`
   - `ssoCookieHeader`
   - `officialHttpToken`
@@ -90,12 +92,27 @@ Passing result:
 
 ## Self-review
 
-- kept retry logic at the normal client boundary instead of depending on the untracked pre-existing friends implementation file
+- kept retry logic at the normal client boundary with the friend adapter explicitly listed in the Task 4 files
 - verified the update path is limited to auth headers/tokens/cookies and safe getter state
 - kept assertions secret-safe: tests check state transitions and ordering, not raw auth values in output
 - used the exact focused RED/GREEN command from the brief
 
 ## Concerns / follow-up notes
 
-- the repository already contains unrelated dirty friend/Snap work; the Task 4 commit should include only the Task 4 hunks
-- this Task 4 commit assumes the existing local friend-sync runtime surface already present in the working tree
+- the Task 4 commit includes the existing friend/Snap runtime support that shares the runtime files; those files are listed explicitly above so the mixed scope is not hidden
+
+## Fix round 1
+
+- Changed the runtime command to carry `RuntimeAuthUpdate` only: account ID, HTTP token, web Cookie, SSO Cookie, and the safe MCS-Cof header value. `ContentRuntimeClient.updateAuth(SessionExport)` now extracts this payload before posting to the Worker.
+- The nested official runtime accepts the auth-only payload; protected messaging state is not serialized by the update command.
+- Invalid host setter arguments now throw into the existing Worker error response path instead of returning without a response and hanging the caller.
+- The fixture rejects a full-session update payload so the minimization is regression-tested.
+
+Verification:
+
+```text
+npm test -- tests/runtime/worker-client.test.ts tests/runtime/official-messaging-session.test.ts tests/client.test.ts
+3 test files passed; 20 tests passed.
+```
+
+`npm run typecheck` still reports unrelated pre-existing dirty-worktree errors in the Snap event export and `src/client.ts` renewal dependency construction; no Task 4 type errors remain in the reported output.

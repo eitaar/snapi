@@ -318,7 +318,7 @@ async function dispatch(request: RuntimeRequest): Promise<unknown> {
       if (officialRuntime === undefined) {
         throw new AppError("CRYPTO_RUNTIME_FAILED", "Content runtime is not initialized");
       }
-      await officialRuntime.updateAuth(parseSessionExport(request.session));
+      await officialRuntime.updateAuth(request.auth);
       return undefined;
     case "encryptChat":
       if (officialRuntime === undefined || officialConversationManager === undefined) {

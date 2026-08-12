@@ -59,6 +59,15 @@ parentPort.on("message", (request: Record<string, unknown>) => {
     return;
   }
   if (request.method === "updateAuth") {
+    const auth = request.auth as Record<string, unknown> | undefined;
+    if (auth === undefined || "session" in request || "messaging" in auth || "localStorage" in auth || "indexedDb" in auth) {
+      parentPort.postMessage({
+        id,
+        ok: false,
+        error: { code: "WORKER_PROTOCOL_ERROR", message: "auth-only update payload required", details: {} },
+      });
+      return;
+    }
     authUpdated = true;
     parentPort.postMessage({ id, ok: true, value: undefined });
     return;

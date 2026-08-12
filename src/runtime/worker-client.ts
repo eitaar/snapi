@@ -12,7 +12,7 @@ import type {
   PhotoSnapInput,
   RuntimeStatus,
 } from "./content-types.js";
-import type { RuntimeCommand, RuntimeRequest, RuntimeResponse, SerializedAppError } from "./protocol.js";
+import { toRuntimeAuthUpdate, type RuntimeCommand, type RuntimeRequest, type RuntimeResponse, type SerializedAppError } from "./protocol.js";
 
 export interface ContentRuntimeClientOptions {
   readonly workerUrl?: URL;
@@ -123,7 +123,7 @@ export class ContentRuntimeClient {
   }
 
   updateAuth(session: SessionExport): Promise<void> {
-    return this.call({ method: "updateAuth", session });
+    return this.call({ method: "updateAuth", auth: toRuntimeAuthUpdate(session) });
   }
 
   encryptChat(input: ChatInput): Promise<EncryptedContent> {

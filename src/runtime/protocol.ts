@@ -9,9 +9,27 @@ export interface SerializedAppError {
   readonly details: Readonly<Record<string, unknown>>;
 }
 
+export interface RuntimeAuthUpdate {
+  readonly accountId: string;
+  readonly httpToken: string;
+  readonly cookieHeader: string;
+  readonly ssoCookieHeader: string;
+  readonly mcsCofSequenceIds: string;
+}
+
+export function toRuntimeAuthUpdate(session: SessionExport): RuntimeAuthUpdate {
+  return {
+    accountId: session.accountId,
+    httpToken: session.auth.httpToken,
+    cookieHeader: session.auth.cookieHeader,
+    ssoCookieHeader: session.auth.ssoCookieHeader ?? session.auth.cookieHeader,
+    mcsCofSequenceIds: session.auth.requestHeaders["mcs-cof-ids-bin"] ?? "",
+  };
+}
+
 export type RuntimeCommand =
   | { readonly method: "initialize"; readonly session: SessionExport }
-  | { readonly method: "updateAuth"; readonly session: SessionExport }
+  | { readonly method: "updateAuth"; readonly auth: RuntimeAuthUpdate }
   | { readonly method: "encryptChat"; readonly input: ChatInput }
   | { readonly method: "decryptChat"; readonly input: EncryptedContent }
   | { readonly method: "createPhotoSnap"; readonly input: PhotoSnapInput }

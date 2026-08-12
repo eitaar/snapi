@@ -324,7 +324,7 @@ async function handleHostControl(message: unknown): Promise<boolean> {
     case "setWebCookieHeader": {
       const argument = candidate.argumentList?.length === 1 ? candidate.argumentList[0] : undefined;
       if (argument?.type !== "RAW" || typeof argument.value !== "string" || argument.value.trim() === "") {
-        return true;
+        throw new Error("Official web Cookie update payload is invalid");
       }
       webCookieHeader = argument.value;
       value = true;
@@ -333,7 +333,7 @@ async function handleHostControl(message: unknown): Promise<boolean> {
     case "setSsoCookieHeader": {
       const argument = candidate.argumentList?.length === 1 ? candidate.argumentList[0] : undefined;
       if (argument?.type !== "RAW" || typeof argument.value !== "string" || argument.value.trim() === "") {
-        return true;
+        throw new Error("Official SSO Cookie update payload is invalid");
       }
       ssoCookieHeader = argument.value;
       value = true;
@@ -342,7 +342,7 @@ async function handleHostControl(message: unknown): Promise<boolean> {
     case "setOfficialHttpToken": {
       const argument = candidate.argumentList?.length === 1 ? candidate.argumentList[0] : undefined;
       if (argument?.type !== "RAW" || typeof argument.value !== "string" || argument.value.trim() === "") {
-        return true;
+        throw new Error("Official HTTP token update payload is invalid");
       }
       officialHttpToken = argument.value;
       value = true;

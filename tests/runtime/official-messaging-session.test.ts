@@ -1,5 +1,6 @@
 import { describe, expect, it, vi } from "vitest";
 import { OfficialWorkerClient } from "../../src/runtime/official-worker-client.js";
+import { toRuntimeAuthUpdate } from "../../src/runtime/protocol.js";
 import type { SessionExport } from "../../src/session/types.js";
 
 function session(): SessionExport {
@@ -50,7 +51,7 @@ describe("official messaging session", () => {
     });
     try {
       await client.initializeWasm(session());
-      await client.updateAuth(refreshedSession());
+      await client.updateAuth(toRuntimeAuthUpdate(refreshedSession()));
       await expect(client.syncFriends()).resolves.toEqual({
         syncedAt: "2026-08-12T00:00:00.000Z",
         status: "success",
