@@ -104,4 +104,53 @@ describe("AuthProvider", () => {
     await expect(provider.refreshOnce({ kind: "http", status: 401 })).rejects.toThrow("refresh denied");
     expect(provider.sessionSnapshot()).toBe(original);
   });
+
+  it("automatically refreshes and publishes shared auth while a client stays open", async () => {
+    vi.useFakeTimers();
+    vi.setSystemTime("2026-08-11T01:00:00.000Z");
+    const original = session("2026-08-11T00:55:00.000Z");
+    const refreshed: SessionExport = {
+      ...original,
+      exportedAt: "2026-08-11T01:05:00.000Z",
+      auth: {
+        ...original.auth,
+        httpToken: "shared-new",
+        gatewayToken: "shared-new",
+        tokenRefreshedAt: "2026-08-11T01:05:00.000Z",
+      },
+    };
+    const refresh = vi.fn(async () => refreshed);
+    const persist = vi.fn(async () => undefined);
+    const provider = new AuthProvider(original, { refresh, persist });
+
+    const stop = provider.startAutoRefresh();
+    await vi.advanceTimersByTimeAsync(299_999);
+    expect(refresh).not.toHaveBeenCalled();
+    await vi.advanceTimersByTimeAsync(1);
+
+    expect(refresh).toHaveBeenCalledOnce();
+    expect(persist).toHaveBeenCalledWith(refreshed);
+    await expect(provider.getGatewayToken()).resolves.toBe("shared-new");
+
+    stop();
+    await vi.advanceTimersByTimeAsync(600_000);
+    expect(refresh).toHaveBeenCalledOnce();
+    vi.useRealTimers();
+  });
+
+  it("caps auto-refresh scheduling when a captured timestamp is in the future", async () => {
+    vi.useFakeTimers();
+    vi.setSystemTime("2026-08-11T01:00:00.000Z");
+    const refresh = vi.fn(async (value: SessionExport) => value);
+    const provider = new AuthProvider(session("2099-08-11T01:00:00.000Z"), { refresh });
+
+    const stop = provider.startAutoRefresh();
+    await vi.advanceTimersByTimeAsync(599_999);
+    expect(refresh).not.toHaveBeenCalled();
+    await vi.advanceTimersByTimeAsync(1);
+    expect(refresh).not.toHaveBeenCalled();
+
+    stop();
+    vi.useRealTimers();
+  });
 });

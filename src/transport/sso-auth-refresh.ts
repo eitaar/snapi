@@ -211,6 +211,7 @@ export async function refreshSnapchatSso(
     auth: {
       ...session.auth,
       httpToken: token,
+      gatewayToken: token,
       tokenRefreshedAt: refreshedAt,
       ssoCookieHeader: mergeSetCookies(ssoCookieHeader, responseSetCookies(response.headers)),
     },

@@ -166,15 +166,12 @@ describe("enrichSessionWithHarAuth", () => {
     }
   });
 
-  it("preserves a Gateway token that differs from successful Messaging API auth", () => {
+  it("rejects a Gateway token that differs from successful Messaging API auth", () => {
     const messagingToken = "m".repeat(96);
     const gatewayToken = "g".repeat(96);
-    const refreshed = enrichSessionWithHarAuth(
+    expect(() => enrichSessionWithHarAuth(
       session,
       har("account-session=secret", session.accountId, messagingToken, gatewayToken),
-    );
-
-    expect(refreshed.auth.httpToken).toBe(messagingToken);
-    expect(refreshed.auth.gatewayToken).toBe(gatewayToken);
+    )).toThrow("same authentication token");
   });
 });

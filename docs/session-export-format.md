@@ -29,7 +29,9 @@ the fields below without changing their values.
 `auth` contains non-empty strings `httpToken`, `gatewayToken`, and
 `cookieHeader`, plus `requestHeaders`, an object whose values are strings.
 Header names are preserved exactly. In particular, keep the observed
-`mcs-cof-ids-bin` value when present.
+`mcs-cof-ids-bin` value when present. For build `8dd50222`, `httpToken` and
+`gatewayToken` are compatibility fields for the same shared auth token and
+must contain the same value.
 
 For login-epoch validation, `auth.ssoCookieHeader` contains the most recent
 accounts-domain Cookie state: the Cookie header from the selected
@@ -46,19 +48,22 @@ token renewal.
 on a successful `POST /web-chat-session/refresh` request.
 `auth.tokenRefreshedAt` and `auth.webSessionRefreshedAt` independently record
 the HTTP and Web-session renewal clocks. `auth.gatewayTokenCapturedAt` records
-when the successful Gateway `101` handshake supplied the separate Gateway
-subprotocol token; it is not renewed by the SSO or Web-session heartbeat.
+when a browser capture last proved that shared token in a successful Gateway
+`101` handshake. SSO renewal updates the shared token but does not rewrite this
+browser-observation timestamp.
 
 Automatic token renewal runs the pinned official Web Attestation WASM and posts
 the proof with `auth.ssoCookieHeader` to `accounts/sso`. A successful response
-replaces `httpToken`, the Messaging HTTP credential. `gatewayToken` is kept
-separate because a successful browser HAR can contain a different Bearer in
-the Gateway WebSocket subprotocol. The CLI repeats the hourly Web-session
-heartbeat with the current `httpToken` and `cookieHeader`. A successful empty
-response preserves both captured token fields, merges any response
-`Set-Cookie` values into the Web cookie, and advances the heartbeat clock. A
-new successful Gateway handshake in a fresh HAR is required after the captured
-Gateway token expires. A rejected renewal requires a fresh login HAR.
+replaces both compatibility token fields. This matches the pinned browser
+bundle, whose Messaging and Gateway paths call the same auth-token getter, and
+the accepted HAR requires the successful Messaging and Gateway requests to use
+that same value. While a client remains open, the CLI drives this renewal on
+the ten-minute freshness schedule and pushes the result into the official
+Worker before its next reconnect. The CLI separately repeats the hourly
+Web-session heartbeat with the current shared token and `cookieHeader`. A
+successful empty response preserves the token, merges any response `Set-Cookie`
+values into the Web cookie, and advances the heartbeat clock. A rejected
+renewal requires a fresh login HAR.
 
 Use `snap session refresh-har <fresh.har>` to extract and persist these values
 as one atomic operation.

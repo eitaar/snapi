@@ -1,4 +1,4 @@
-import { describe, expect, it } from "vitest";
+import { describe, expect, it, vi } from "vitest";
 import {
   createOfficialWebSocketConstructor,
   installOfficialWebSocket,
@@ -18,6 +18,8 @@ class NativeSocket {
   static readonly CLOSING = 2;
   static readonly CLOSED = 3;
   static readonly calls: SocketCall[] = [];
+  private readonly closeListeners = new Set<() => void>();
+  readonly close = vi.fn(() => this.emitClose());
 
   constructor(readonly url: string | URL, readonly options?: unknown) {
     NativeSocket.calls.push({ url, options });
@@ -25,6 +27,15 @@ class NativeSocket {
 
   send(value: string): string {
     return `sent:${value}`;
+  }
+
+  addEventListener(type: string, listener: () => void): void {
+    if (type === "close") this.closeListeners.add(listener);
+  }
+
+  emitClose(): void {
+    for (const listener of this.closeListeners) listener();
+    this.closeListeners.clear();
   }
 }
 
@@ -99,6 +110,80 @@ describe("official WebSocket compatibility wrapper", () => {
       installed.restore();
       installed.restore();
       expect(Object.getOwnPropertyDescriptor(target, "WebSocket")).toEqual(beforeInstall);
+    } finally {
+      if (previous === undefined) Reflect.deleteProperty(target, "WebSocket");
+      else Object.defineProperty(target, "WebSocket", previous);
+    }
+  });
+
+  it("blocks disabled network access and closes sockets when capture-only mode starts", () => {
+    const target = globalThis as unknown as Record<PropertyKey, unknown>;
+    const previous = Object.getOwnPropertyDescriptor(target, "WebSocket");
+    Object.defineProperty(target, "WebSocket", {
+      value: NativeSocket,
+      configurable: true,
+      writable: true,
+    });
+
+    try {
+      const installed = installOfficialWebSocket(ORIGIN, { allowNetwork: true });
+      const socket = new installed.WebSocket("wss://example.test/socket", ["chat"]);
+
+      installed.disableNetwork();
+
+      expect(socket.close).toHaveBeenCalledOnce();
+      expect(() => new installed.WebSocket("wss://example.test/blocked", ["chat"]))
+        .toThrow("network access is disabled");
+    } finally {
+      if (previous === undefined) Reflect.deleteProperty(target, "WebSocket");
+      else Object.defineProperty(target, "WebSocket", previous);
+    }
+  });
+
+  it("blocks construction when installed with network disabled", () => {
+    const target = globalThis as unknown as Record<PropertyKey, unknown>;
+    const previous = Object.getOwnPropertyDescriptor(target, "WebSocket");
+    Object.defineProperty(target, "WebSocket", {
+      value: NativeSocket,
+      configurable: true,
+      writable: true,
+    });
+
+    try {
+      const installed = installOfficialWebSocket(ORIGIN, { allowNetwork: false });
+      expect(() => new installed.WebSocket("wss://example.test/blocked", ["chat"]))
+        .toThrow("network access is disabled");
+    } finally {
+      if (previous === undefined) Reflect.deleteProperty(target, "WebSocket");
+      else Object.defineProperty(target, "WebSocket", previous);
+    }
+  });
+
+  it("forgets normally closed sockets and closes remaining sockets on restore", () => {
+    const target = globalThis as unknown as Record<PropertyKey, unknown>;
+    const previous = Object.getOwnPropertyDescriptor(target, "WebSocket");
+    Object.defineProperty(target, "WebSocket", {
+      value: NativeSocket,
+      configurable: true,
+      writable: true,
+    });
+
+    try {
+      const installed = installOfficialWebSocket(ORIGIN, { allowNetwork: true });
+      const closed = new installed.WebSocket(
+        "wss://example.test/closed",
+        ["chat"],
+      ) as unknown as NativeSocket;
+      const active = new installed.WebSocket(
+        "wss://example.test/active",
+        ["chat"],
+      ) as unknown as NativeSocket;
+      closed.emitClose();
+
+      installed.restore();
+
+      expect(closed.close).not.toHaveBeenCalled();
+      expect(active.close).toHaveBeenCalledOnce();
     } finally {
       if (previous === undefined) Reflect.deleteProperty(target, "WebSocket");
       else Object.defineProperty(target, "WebSocket", previous);

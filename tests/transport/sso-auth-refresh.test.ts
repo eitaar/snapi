@@ -126,7 +126,7 @@ describe("refreshSnapchatSso", () => {
     await expect(refreshSnapchatWebSession(session(), { fetch })).rejects.not.toThrow("network-secret");
   });
 
-  it("renews the HTTP token while preserving the separately captured Gateway token", async () => {
+  it("renews the shared HTTP and Gateway token", async () => {
     const token = "n".repeat(292);
     const fetch = vi.fn(async (_input: string | URL | Request, _init?: RequestInit) =>
       new Response(token, { status: 200, headers: { scuid: session().accountId } }));
@@ -147,7 +147,7 @@ describe("refreshSnapchatSso", () => {
     expect(headers.get("cookie")).toBe("account=old");
     expect(headers.has("scuid")).toBe(false);
     expect(refreshed.auth.httpToken).toBe(token);
-    expect(refreshed.auth.gatewayToken).toBe("old-gateway-token");
+    expect(refreshed.auth.gatewayToken).toBe(token);
     expect(refreshed.auth.tokenRefreshedAt).toBe("2026-08-11T01:02:03.000Z");
   });
 

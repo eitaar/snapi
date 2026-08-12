@@ -59,6 +59,42 @@ export class AuthProvider implements RequestAuthSource {
     return this.current.auth.gatewayToken;
   }
 
+  startAutoRefresh(onError: (error: unknown) => void = () => undefined): () => void {
+    const now = this.dependencies.now ?? Date.now;
+    const maxAgeMs = this.dependencies.maxAgeMs ?? 600_000;
+    let stopped = false;
+    let timer: ReturnType<typeof setTimeout> | undefined;
+
+    const schedule = (retryDelayMs?: number): void => {
+      if (stopped) return;
+      const refreshedAt = Date.parse(
+        this.current.auth.tokenRefreshedAt ?? this.current.exportedAt,
+      );
+      const delay = retryDelayMs ?? (
+        Number.isNaN(refreshedAt)
+          ? maxAgeMs
+          : Math.min(maxAgeMs, Math.max(0, refreshedAt + maxAgeMs - now()))
+      );
+      timer = setTimeout(() => {
+        void this.getRequestAuth().then(
+          () => schedule(),
+          (error: unknown) => {
+            onError(error);
+            schedule(maxAgeMs);
+          },
+        );
+      }, delay);
+      timer.unref?.();
+    };
+
+    schedule();
+    return () => {
+      stopped = true;
+      if (timer !== undefined) clearTimeout(timer);
+      timer = undefined;
+    };
+  }
+
   refreshOnce(_reason: AuthRefreshReason): Promise<RequestAuth> {
     if (this.refreshPromise !== undefined) return this.refreshPromise;
     this.refreshPromise = (async () => {

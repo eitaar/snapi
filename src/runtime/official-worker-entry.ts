@@ -161,7 +161,9 @@ Object.defineProperties(target, {
 // The official bundle calls the browser WebSocket constructor with only its
 // URL and subprotocols. Node does not synthesize the page Origin header, so
 // install the narrow compatibility wrapper before evaluating the bundle.
-installOfficialWebSocket("https://www.snapchat.com");
+const officialWebSocket = installOfficialWebSocket("https://www.snapchat.com", {
+  allowNetwork: data.allowNetwork === true,
+});
 
 function officialWebpackRequire(): ((id: string | number) => unknown) {
   const require = target.__officialWebpackRequire;
@@ -356,6 +358,7 @@ async function handleHostControl(message: unknown): Promise<boolean> {
     }
     case "beginCaptureOnly":
       networkBoundary.beginCaptureOnly();
+      officialWebSocket.disableNetwork();
       value = true;
       break;
     case "drainCapturedRequests":

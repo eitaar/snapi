@@ -24,6 +24,15 @@ describe("Gateway handshake diagnostics", () => {
       .toMatchObject({ classification: "authorization-rejected", protocol: "none" });
   });
 
+  it("does not classify an upgrade with the wrong subprotocol as open", () => {
+    expect(summarizeGatewayHandshake(101, {
+      "Sec-WebSocket-Protocol": "unexpected-protocol",
+    }, 4)).toMatchObject({
+      classification: "unexpected-status",
+      protocol: "other",
+    });
+  });
+
   it("normalizes header names and never includes header values", () => {
     const observation = summarizeGatewayHandshake(429, {
       "X-Request-Id": "secret-request-id",

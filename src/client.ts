@@ -152,7 +152,14 @@ async function composeDefault(config: AppConfig): Promise<SnapchatClientComponen
       },
     });
     const gateway = new GatewayClient({ auth });
-    return { messaging, media, friends, gateway, runtime: initializedRuntime, lock };
+    const stopAuthRefresh = auth.startAutoRefresh();
+    const maintainedRuntime: RuntimeLike = {
+      shutdown: async () => {
+        stopAuthRefresh();
+        await initializedRuntime.shutdown();
+      },
+    };
+    return { messaging, media, friends, gateway, runtime: maintainedRuntime, lock };
   } catch (error) {
     await runtime?.shutdown().catch(() => undefined);
     await lock.release().catch(() => undefined);

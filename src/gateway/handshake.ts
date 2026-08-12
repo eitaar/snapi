@@ -26,8 +26,11 @@ function protocol(value: string | readonly string[] | undefined): GatewayHandsha
   return first === undefined ? "none" : "other";
 }
 
-function classification(status: number): GatewayHandshakeClassification {
-  if (status === 101) return "open";
+function classification(
+  status: number,
+  selectedProtocol: GatewayHandshakeObservation["protocol"],
+): GatewayHandshakeClassification {
+  if (status === 101 && selectedProtocol === "snap-ws-auth") return "open";
   if (status === 401 || status === 403) return "authorization-rejected";
   if (status === 429) return "rate-limited";
   return "unexpected-status";
@@ -41,10 +44,11 @@ export function summarizeGatewayHandshake(
   const protocolHeader = Object.entries(headers).find(([name]) =>
     name.toLowerCase() === "sec-websocket-protocol",
   )?.[1];
+  const selectedProtocol = protocol(protocolHeader);
   return {
     status,
-    classification: classification(status),
-    protocol: protocol(protocolHeader),
+    classification: classification(status, selectedProtocol),
+    protocol: selectedProtocol,
     headerNames: Object.keys(headers).map((name) => name.toLowerCase()).sort(),
     durationMs: Math.max(0, Math.round(durationMs)),
   };

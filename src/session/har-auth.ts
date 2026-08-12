@@ -248,6 +248,12 @@ export function enrichSessionWithHarAuth(
       "HAR does not contain successful Gateway authentication",
     );
   }
+  if (observedGatewayToken !== httpToken) {
+    throw new AppError(
+      "INVALID_SESSION_EXPORT",
+      "HAR Gateway and Messaging requests must use the same authentication token",
+    );
+  }
 
   const requestHeaders = { ...session.auth.requestHeaders };
   for (const name of ALLOWED_REQUEST_HEADERS) {

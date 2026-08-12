@@ -43,13 +43,12 @@ fallback for legacy session exports without HAR-managed SSO headers.
 
 Automatic renewal mirrors the two observed browser timers. Roughly every ten
 minutes the CLI runs the pinned official Web Attestation WASM and posts to
-`accounts/sso`; its successful response replaces the Messaging HTTP Bearer.
-The Gateway WebSocket Bearer is kept separately because a successful browser
-HAR can contain a different Gateway token. Roughly hourly it also posts the
-current HTTP Bearer and Web Cookie to `/web-chat-session/refresh`; that
-empty-response heartbeat preserves the HTTP Bearer and extends the Web
-session. A new successful Gateway handshake in a fresh HAR is required when
-the captured Gateway token expires. The captured non-DBSC flow has no Brave
+`accounts/sso`; its successful response replaces the shared Messaging/Gateway
+token and is pushed into the official Worker. A timer keeps that renewal active
+for long-running watch commands, and Gateway reconnect obtains auth through the
+same provider. Roughly hourly the CLI also posts the current token and Web
+Cookie to `/web-chat-session/refresh`; that empty-response heartbeat preserves
+the token and extends the Web session. The captured non-DBSC flow has no Brave
 dependency. If renewal rejects the exported login context, a fresh login HAR
 is required.
 
@@ -74,12 +73,11 @@ $env:SNAP_LIVE_TESTS='1'; node dist/cli/index.js debug auth-gap --request privat
 
 `session check` performs shape, account, lock, asset hash, module, and WASM
 checks without authenticated network traffic. `session refresh-har` extracts
-the browser-issued Messaging HTTP Bearer and Gateway WebSocket Bearer
-separately, along with the Web Cookie, accounts context, and restricted
-heartbeat headers from a fresh sensitive HAR, then atomically persists them.
-Later successful `accounts/sso` responses replace only the Messaging HTTP
-Bearer; the captured Gateway Bearer is retained until a fresh successful
-Gateway handshake is imported.
+the browser-issued shared Messaging/Gateway token, along with the Web Cookie,
+accounts context, and restricted heartbeat headers from a fresh sensitive HAR,
+then atomically persists them. The importer rejects captures where successful
+Messaging and Gateway requests use different tokens. Later successful
+`accounts/sso` responses replace the shared token automatically.
 `session import` validates the export and every declared asset hash while
 holding the account's single-writer lock, then atomically installs it.
 
@@ -153,8 +151,8 @@ request/response body material.
 `debug gateway-handshake --json` is an explicitly enabled, read-only WebSocket
 Upgrade probe. It reports only the HTTP status, selected protocol category,
 response header names, timing, and a safe classification. A `401` or `403`
-means the captured Gateway subprotocol token is rejected; the CLI does not
-replace it with the separate HTTP token or attempt a browser-context bypass.
+means the shared token was rejected in the CLI's Gateway connection context;
+the CLI does not attempt a browser-context bypass.
 
 See [session export format](docs/session-export-format.md),
 [security boundaries](docs/security-boundaries.md), and the
