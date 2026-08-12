@@ -112,6 +112,15 @@ describe("MessagingClient", () => {
     expect(deps.runtime.exportState).not.toHaveBeenCalled();
   });
 
+  it("maps ambiguous gRPC authentication failure to unconfirmed delivery", async () => {
+    const deps = dependencies([]);
+    deps.grpc.unary.mockRejectedValue(new AppError("GRPC_FAILED", "auth failed", { grpcStatus: 7 }));
+    const client = new MessagingClient(deps);
+
+    await expect(client.sendText(input)).rejects.toMatchObject({ code: "DELIVERY_UNCONFIRMED" });
+    expect(deps.grpc.unary).toHaveBeenCalledOnce();
+  });
+
   it("persists received plaintext state before ordered emission and deduplicates IDs", async () => {
     const events: string[] = [];
     const deps = dependencies(events);

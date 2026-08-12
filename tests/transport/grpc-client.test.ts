@@ -161,6 +161,21 @@ describe("GrpcWebClient", () => {
     expect(fetch).toHaveBeenCalledOnce();
   });
 
+  it("does not refresh or retry an ambiguous send after gRPC 7", async () => {
+    const source = auth();
+    const unauthenticated = concatBytes(
+      encodeDataFrame(new Uint8Array()),
+      encodeTrailerFrame(new Map([["grpc-status", "7"]])),
+    );
+    const fetch = vi.fn(async () => new Response(body(unauthenticated), { status: 200 }));
+    const client = new GrpcWebClient({ auth: source, fetch });
+
+    await expect(client.unary("service.Name", "Method", new Uint8Array(), ambiguousSendOptions))
+      .rejects.toMatchObject({ code: "GRPC_FAILED", details: { grpcStatus: 7 } });
+    expect(source.refreshOnce).not.toHaveBeenCalled();
+    expect(fetch).toHaveBeenCalledOnce();
+  });
+
   it("reports rate limiting and malformed responses without secret values", async () => {
     const source = auth();
     const fetch = vi.fn()

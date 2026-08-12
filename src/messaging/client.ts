@@ -47,6 +47,12 @@ interface CryptoStateStore {
   write(value: CryptoStateExport): Promise<void>;
 }
 
+function isAmbiguousAuthFailure(error: unknown): error is AppError {
+  return error instanceof AppError
+    && (error.code === "NETWORK_FAILED"
+      || (error.code === "GRPC_FAILED" && (error.details.grpcStatus === 7 || error.details.grpcStatus === 16)));
+}
+
 export interface MessagingClientDependencies {
   readonly runtime: MessagingRuntime;
   readonly grpc: MessagingGrpc;
@@ -101,7 +107,7 @@ export class MessagingClient {
         },
       );
     } catch (error) {
-      if (error instanceof AppError && error.code === "NETWORK_FAILED") {
+      if (isAmbiguousAuthFailure(error)) {
         throw new AppError(
           "DELIVERY_UNCONFIRMED",
           "Chat delivery could not be confirmed and was not retried",
