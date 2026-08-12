@@ -1,6 +1,7 @@
 import type { ErrorCode } from "../errors.js";
 import type { SessionExport } from "../session/types.js";
 import type { ChatInput, EncryptedContent, PhotoSnapInput } from "./content-types.js";
+import type { FriendSnapshot } from "../friends/types.js";
 
 export interface SerializedAppError {
   readonly code: ErrorCode;
@@ -10,13 +11,16 @@ export interface SerializedAppError {
 
 export type RuntimeCommand =
   | { readonly method: "initialize"; readonly session: SessionExport }
+  | { readonly method: "updateAuth"; readonly session: SessionExport }
   | { readonly method: "encryptChat"; readonly input: ChatInput }
   | { readonly method: "decryptChat"; readonly input: EncryptedContent }
   | { readonly method: "createPhotoSnap"; readonly input: PhotoSnapInput }
   | { readonly method: "refreshAuth" }
   | { readonly method: "exportState" }
   | { readonly method: "syncMessages" }
+  | { readonly method: "syncFriends" }
   | { readonly method: "drainChatMessages" }
+  | { readonly method: "drainSnapMessages" }
   | { readonly method: "shutdown" };
 
 export type RuntimeRequest = RuntimeCommand & { readonly id: number };

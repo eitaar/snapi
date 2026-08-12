@@ -28,7 +28,40 @@ function session(): SessionExport {
   };
 }
 
+function refreshedSession(): SessionExport {
+  return {
+    ...session(),
+    exportedAt: "2026-08-12T00:00:00.000Z",
+    auth: {
+      httpToken: "refreshed-official-http-token",
+      gatewayToken: "refreshed-official-gateway-token",
+      cookieHeader: "refreshed-web-cookie",
+      ssoCookieHeader: "refreshed-sso-cookie",
+      requestHeaders: { "mcs-cof-ids-bin": "refreshed-cof-sequence" },
+    },
+  };
+}
+
 describe("official messaging session", () => {
+  it("updates in-memory auth for the next read-only official operation", async () => {
+    const client = new OfficialWorkerClient({
+      assetDir: ".",
+      workerUrl: new URL("../fixtures/official-session-contract-worker.mjs", import.meta.url),
+    });
+    try {
+      await client.initializeWasm(session());
+      await client.updateAuth(refreshedSession());
+      await expect(client.syncFriends()).resolves.toEqual({
+        syncedAt: "2026-08-12T00:00:00.000Z",
+        status: "success",
+        friends: [],
+        incomingRequests: [],
+      });
+    } finally {
+      await client.shutdown();
+    }
+  });
+
   it("rejects initialization when the official Worker fails before ready", async () => {
     const client = new OfficialWorkerClient({
       assetDir: ".",
@@ -55,6 +88,12 @@ describe("official messaging session", () => {
     try {
       const manager = await client.initializeMessagingSession(session());
       await expect(manager.call<boolean>(["ready"])).resolves.toBe(true);
+      await expect(client.syncFriends()).resolves.toEqual({
+        syncedAt: "2026-08-12T00:00:00.000Z",
+        status: "success",
+        friends: [],
+        incomingRequests: [],
+      });
       await client.syncFeed(7);
       expect(onMessage).toHaveBeenCalledWith({
         messageId: "received-message",

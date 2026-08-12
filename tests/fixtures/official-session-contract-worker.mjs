@@ -2,6 +2,18 @@ import { MessageChannel, parentPort } from "node:worker_threads";
 
 if (parentPort === null) throw new Error("fixture requires parentPort");
 let nextId = 1;
+let webCookieHeader;
+let ssoCookieHeader;
+let officialHttpToken;
+let authTokenGetter;
+let mcsCofSequenceIdsGetter;
+let wasmLoaded = false;
+const refreshedAuthExpectation = {
+  webCookieHeader: "refreshed-web-cookie",
+  ssoCookieHeader: "refreshed-sso-cookie",
+  officialHttpToken: "refreshed-official-http-token",
+  mcsCofSequenceIds: "refreshed-cof-sequence",
+};
 
 function callRemote(endpoint, path, args = []) {
   const id = `contract-${nextId++}`;
@@ -49,6 +61,60 @@ function expose(endpoint, handlers) {
 }
 
 expose(parentPort, {
+  "__host.setWebCookieHeader": async (value) => {
+    webCookieHeader = value;
+    return true;
+  },
+  "__host.setSsoCookieHeader": async (value) => {
+    ssoCookieHeader = value;
+    return true;
+  },
+  "__host.setOfficialHttpToken": async (value) => {
+    officialHttpToken = value;
+    return true;
+  },
+  "__host.syncFriends": async () => ({
+    ...(wasmLoaded ? await (async () => {
+      const authToken = authTokenGetter === undefined
+        ? undefined
+        : await callRemote(authTokenGetter, ["apply"], [undefined, []]);
+      const mcsCofSequenceIds = mcsCofSequenceIdsGetter === undefined
+        ? undefined
+        : await callRemote(mcsCofSequenceIdsGetter, ["apply"], [undefined, []]);
+      if (
+        webCookieHeader !== refreshedAuthExpectation.webCookieHeader ||
+        ssoCookieHeader !== refreshedAuthExpectation.ssoCookieHeader ||
+        officialHttpToken !== refreshedAuthExpectation.officialHttpToken ||
+        authToken !== refreshedAuthExpectation.officialHttpToken ||
+        mcsCofSequenceIds !== refreshedAuthExpectation.mcsCofSequenceIds
+      ) {
+        throw new Error("official auth state was not refreshed before the read-only operation");
+      }
+      return {
+        syncedAt: "2026-08-12T00:00:00.000Z",
+        status: "success",
+        friends: [],
+        incomingRequests: [],
+      };
+    })() : {
+      syncedAt: "2026-08-12T00:00:00.000Z",
+      status: "success",
+      friends: [],
+      incomingRequests: [],
+    }),
+  }),
+  setAuthTokenGetter: async (value) => {
+    authTokenGetter = value;
+    return true;
+  },
+  setMcsCofSequenceIdsGetter: async (value) => {
+    mcsCofSequenceIdsGetter = value;
+    return true;
+  },
+  loadWasm: async () => {
+    wasmLoaded = true;
+    return undefined;
+  },
   createMessagingSession: async (...args) => {
     if (args.length !== 18) throw new Error("expected 18 messaging arguments");
     if (!(args[0]?.userId?.id instanceof Uint8Array) || args[0].userId.id.length !== 16) {

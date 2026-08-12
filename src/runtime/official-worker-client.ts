@@ -2,6 +2,9 @@ import { MessageChannel, MessagePort, Worker, type TransferListItem } from "node
 import { randomUUID } from "node:crypto";
 import { AppError } from "../errors.js";
 import type { SessionExport } from "../session/types.js";
+import type { IncomingSnapMediaInfo } from "./content-types.js";
+import { syncOfficialFriends } from "./official-host-control.js";
+import type { FriendSnapshot } from "../friends/types.js";
 
 interface SerializedValue {
   readonly type: "RAW" | "HANDLER";
@@ -404,6 +407,14 @@ export interface OfficialWorkerClientOptions {
   readonly conversationDelegate?: object;
 }
 
+export interface OfficialResolvedMediaLayer {
+  readonly bytes: Uint8Array;
+  readonly mimeType: string;
+  readonly width?: number;
+  readonly height?: number;
+  readonly hasAudio: boolean;
+}
+
 export class OfficialWorkerClient {
   private readonly worker: Worker;
   private readonly pending = new Map<string, PendingCall>();
@@ -418,6 +429,11 @@ export class OfficialWorkerClient {
 
   private exportMessagingStateSnapshot: (() => OfficialMessagingStateExport) | undefined;
   private feedManager: OfficialRemote | undefined;
+  private accountId: string | undefined;
+  private requestAuthState = {
+    httpToken: "",
+    mcsCofSequenceIds: "",
+  };
   constructor(private readonly options: OfficialWorkerClientOptions) {
     this.ready = new Promise((resolve, reject) => {
       this.resolveReady = resolve;
@@ -498,17 +514,36 @@ export class OfficialWorkerClient {
     });
   }
 
+  private async applyUpdatedAuth(session: SessionExport): Promise<void> {
+    this.requestAuthState = {
+      httpToken: session.auth.httpToken,
+      mcsCofSequenceIds: session.auth.requestHeaders["mcs-cof-ids-bin"] ?? "",
+    };
+    await this.apply(["__host", "setWebCookieHeader"], [session.auth.cookieHeader]);
+    await this.apply(["__host", "setSsoCookieHeader"], [session.auth.ssoCookieHeader ?? session.auth.cookieHeader]);
+    await this.apply(["__host", "setOfficialHttpToken"], [session.auth.httpToken]);
+  }
+
   async initializeWasm(session: SessionExport): Promise<void> {
-    await this.apply(["setAuthTokenGetter"], [async () => session.auth.httpToken]);
+    this.accountId = session.accountId;
+    await this.applyUpdatedAuth(session);
+    await this.apply(["setAuthTokenGetter"], [async () => this.requestAuthState.httpToken]);
     await this.apply(["setMcsCofSequenceIdsGetter"], [
-      async () => session.auth.requestHeaders["mcs-cof-ids-bin"] ?? "",
+      async () => this.requestAuthState.mcsCofSequenceIds,
     ]);
     await this.apply(["loadWasm"], [
       randomUUID(),
-      async () => session.auth.httpToken,
+      async () => this.requestAuthState.httpToken,
       () => undefined,
       () => undefined,
     ]);
+  }
+
+  async updateAuth(session: SessionExport): Promise<void> {
+    if (this.accountId === undefined) {
+      throw new AppError("CRYPTO_RUNTIME_FAILED", "Official messaging account is not initialized");
+    }
+    await this.applyUpdatedAuth(session);
   }
 
   async createMessagingSession(args: readonly unknown[]): Promise<OfficialRemote> {
@@ -534,11 +569,28 @@ export class OfficialWorkerClient {
     return conversationManager;
   }
 
+  async resolveIncomingMedia(
+    mediaInfo: IncomingSnapMediaInfo,
+    context: string,
+  ): Promise<readonly OfficialResolvedMediaLayer[]> {
+    if (this.accountId === undefined) {
+      throw new AppError("CRYPTO_RUNTIME_FAILED", "Official messaging account is not initialized");
+    }
+    return this.apply<readonly OfficialResolvedMediaLayer[]>(
+      ["__host", "resolveIncomingMedia"],
+      [mediaInfo, context, this.accountId],
+    );
+  }
+
   async syncFeed(reason = 0): Promise<void> {
     if (this.feedManager === undefined) {
       throw new AppError("CRYPTO_RUNTIME_FAILED", "Official messaging FeedManager is not initialized");
     }
     await this.feedManager.call<void>(["syncFeed"], [reason, undefined, new Map()]);
+  }
+
+  syncFriends(): Promise<FriendSnapshot> {
+    return syncOfficialFriends(this, this.accountId);
   }
 
   exportMessagingState(): OfficialMessagingStateExport {
@@ -562,6 +614,8 @@ export class OfficialWorkerClient {
     this.remotePorts.clear();
     this.exportMessagingStateSnapshot = undefined;
     this.feedManager = undefined;
+    this.accountId = undefined;
+    this.requestAuthState = { httpToken: "", mcsCofSequenceIds: "" };
     await this.worker.terminate();
   }
 }

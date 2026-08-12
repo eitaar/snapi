@@ -13,10 +13,11 @@ import { installBrowserGlobals, type InstalledGlobals } from "./browser-globals.
 import { createBuild8dd50222Adapter } from "./builds/8dd50222.js";
 import { exportIndexedDbSnapshot, importIndexedDbSnapshot } from "./indexeddb-snapshot.js";
 import type { RuntimeRequest, RuntimeResponse, SerializedAppError } from "./protocol.js";
-import type { ChatMessage, CryptoStateExport } from "./content-types.js";
+import type { ChatMessage, CryptoStateExport, IncomingSnap, IncomingSnapMedia } from "./content-types.js";
 import { captureOfficialChatEnvelope } from "./official-chat-capture.js";
 import { OfficialWorkerClient, exposeOfficial, type OfficialRemote } from "./official-worker-client.js";
 import { OfficialPhotoContentBuilder, type OfficialPhotoMessageContent } from "./official-photo-content.js";
+import type { OfficialIncomingSnapCandidate } from "./official-incoming-snap.js";
 import { uploadOfficialPhotoContent } from "../media/official-upload.js";
 import { GrpcWebClient } from "../transport/grpc-client.js";
 import { beginOfficialCaptureOnly, drainOfficialCapturedRequests } from "./official-host-control.js";
@@ -35,7 +36,36 @@ let installedGlobals: InstalledGlobals | undefined;
 let photoBuilder: OfficialPhotoContentBuilder | undefined;
 let photoUploadError: AppError | undefined;
 let chatSyncError: AppError | undefined;
+let snapResolveError: AppError | undefined;
 const chatMessages: ChatMessage[] = [];
+const snapMessages: IncomingSnap[] = [];
+
+async function resolveIncomingSnap(
+  runtime: OfficialWorkerClient,
+  snap: OfficialIncomingSnapCandidate,
+): Promise<void> {
+  const media: IncomingSnapMedia[] = [];
+  for (const mediaInfo of snap.mediaInfos) {
+    const layers = await runtime.resolveIncomingMedia(mediaInfo, "chat_playback");
+    for (const layer of layers) {
+      media.push({
+        bytes: layer.bytes,
+        mimeType: layer.mimeType,
+        ...(typeof layer.width === "number" ? { width: layer.width } : {}),
+        ...(typeof layer.height === "number" ? { height: layer.height } : {}),
+        hasAudio: layer.hasAudio,
+      });
+    }
+  }
+  snapMessages.push({
+    type: "snap.received",
+    senderId: snap.senderId,
+    conversationId: snap.conversationId,
+    messageId: snap.messageId,
+    timestamp: snap.timestamp,
+    media,
+  });
+}
 
 function asSerializedError(error: unknown): SerializedAppError {
   const appError = error instanceof AppError
@@ -58,12 +88,20 @@ function requireAdapter(): BuildAdapter {
   return adapter;
 }
 
+function canContinueWithoutMessaging(error: unknown): boolean {
+  return error instanceof AppError && (
+    error.details.safeMessage === "failed to create duplex client" ||
+    error.message === "Official messaging Worker call failed"
+  );
+}
+
 async function initialize(request: Extract<RuntimeRequest, { method: "initialize" }>): Promise<unknown> {
   if (officialRuntime !== undefined) throw new AppError("WORKER_PROTOCOL_ERROR", "Content runtime is already initialized");
   if (data?.assetDir === undefined) {
     throw new AppError("INVALID_CONFIG", "Worker asset directory is required");
   }
   const session = parseSessionExport(request.session);
+  let initializationStage = "browser-state";
   installedGlobals = installBrowserGlobals({
     origin: "https://www.snapchat.com",
     userAgent: "Mozilla/5.0 SnapchatWeb/8dd50222",
@@ -71,6 +109,7 @@ async function initialize(request: Extract<RuntimeRequest, { method: "initialize
   });
   try {
     await importIndexedDbSnapshot(session.indexedDb, installedGlobals.indexedDB);
+    initializationStage = "asset-verification";
     const loader = new AssetLoader(data.assetDir);
     await new CompatibilityGuard(loader).verify(session);
     const nextPhotoBuilder = new OfficialPhotoContentBuilder(
@@ -124,6 +163,7 @@ async function initialize(request: Extract<RuntimeRequest, { method: "initialize
       uploadMediaReferences: () => undefined,
     };
     const noop = () => undefined;
+    let callbackRuntime: OfficialWorkerClient | undefined;
     const conversationDelegate = {
       onConversationCreated: noop,
       onConversationUpdated: (
@@ -133,6 +173,17 @@ async function initialize(request: Extract<RuntimeRequest, { method: "initialize
       ) => {
         if (Array.isArray(messages)) {
           chatMessages.push(...nextPhotoBuilder.decodeChatMessages(messages));
+          const incomingSnaps = nextPhotoBuilder.decodeIncomingSnapMessages(messages);
+          for (const incomingSnap of incomingSnaps) {
+            if (callbackRuntime === undefined) continue;
+            void resolveIncomingSnap(callbackRuntime, incomingSnap).catch((error: unknown) => {
+              snapResolveError = error instanceof AppError
+                ? error
+                : new AppError("CRYPTO_RUNTIME_FAILED", "Official incoming Snap media resolution failed", {
+                    errorName: error instanceof Error ? error.name : "UnknownError",
+                  });
+            });
+          }
         }
       },
       onSendStarted: noop,
@@ -157,14 +208,21 @@ async function initialize(request: Extract<RuntimeRequest, { method: "initialize
       conversationDelegate,
       feedDelegate,
     });
+    callbackRuntime = nextOfficialRuntime;
     try {
+      initializationStage = "official-wasm";
       await nextOfficialRuntime.initializeWasm(session);
     } catch (error) {
       await nextOfficialRuntime.shutdown().catch(() => undefined);
       throw error;
     }
     if (session.messaging !== undefined) {
-      officialConversationManager = await nextOfficialRuntime.initializeMessagingSession(session);
+      try {
+        initializationStage = "messaging-session";
+        officialConversationManager = await nextOfficialRuntime.initializeMessagingSession(session);
+      } catch (error) {
+        if (!canContinueWithoutMessaging(error)) throw error;
+      }
     }
     officialRuntime = nextOfficialRuntime;
     photoBuilder = nextPhotoBuilder;
@@ -172,8 +230,16 @@ async function initialize(request: Extract<RuntimeRequest, { method: "initialize
   } catch (error) {
     installedGlobals.restore();
     installedGlobals = undefined;
-
-    throw error;
+    if (error instanceof AppError) {
+      throw new AppError(error.code, error.message, {
+        ...error.details,
+        initializationStage,
+      });
+    }
+    throw new AppError("CRYPTO_RUNTIME_FAILED", "Content runtime initialization failed", {
+      initializationStage,
+      errorName: error instanceof Error ? error.name : "UnknownError",
+    });
   }
 }
 
@@ -248,6 +314,12 @@ async function dispatch(request: RuntimeRequest): Promise<unknown> {
   switch (request.method) {
     case "initialize":
       return initialize(request);
+    case "updateAuth":
+      if (officialRuntime === undefined) {
+        throw new AppError("CRYPTO_RUNTIME_FAILED", "Content runtime is not initialized");
+      }
+      await officialRuntime.updateAuth(parseSessionExport(request.session));
+      return undefined;
     case "encryptChat":
       if (officialRuntime === undefined || officialConversationManager === undefined) {
         throw new AppError(
@@ -275,6 +347,11 @@ async function dispatch(request: RuntimeRequest): Promise<unknown> {
       }
       chatSyncError = undefined;
       return officialRuntime.syncFeed(0);
+    case "syncFriends":
+      if (officialRuntime === undefined) {
+        throw new AppError("CRYPTO_RUNTIME_FAILED", "Content runtime is not initialized");
+      }
+      return officialRuntime.syncFriends();
     case "drainChatMessages":
       if (chatSyncError !== undefined) {
         const error = chatSyncError;
@@ -282,6 +359,13 @@ async function dispatch(request: RuntimeRequest): Promise<unknown> {
         throw error;
       }
       return chatMessages.splice(0);
+    case "drainSnapMessages":
+      if (snapResolveError !== undefined) {
+        const error = snapResolveError;
+        snapResolveError = undefined;
+        throw error;
+      }
+      return snapMessages.splice(0);
     case "shutdown":
       await officialRuntime?.shutdown();
       installedGlobals?.restore();
@@ -292,7 +376,9 @@ async function dispatch(request: RuntimeRequest): Promise<unknown> {
       photoBuilder = undefined;
       photoUploadError = undefined;
       chatSyncError = undefined;
+      snapResolveError = undefined;
       chatMessages.splice(0);
+      snapMessages.splice(0);
       return undefined;
   }
 }

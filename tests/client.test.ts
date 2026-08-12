@@ -28,6 +28,14 @@ function components(events: string[]): SnapchatClientComponents {
     media: {
       sendPhotoSnap: vi.fn(async () => ({ clientMessageId: "photo-id", status: "confirmed" as const })),
     },
+    friends: {
+      list: vi.fn(async () => ({
+        syncedAt: "2026-08-12T00:00:00.000Z",
+        status: "success" as const,
+        friends: [],
+        incomingRequests: [],
+      })),
+    },
     gateway: {
       connect: vi.fn(async () => undefined),
       events: vi.fn(() => ({
@@ -79,6 +87,14 @@ describe("SnapchatClient", () => {
     await client.close();
   });
 
+  it("delegates read-only friend listing", async () => {
+    const state = components([]);
+    const client = await SnapchatClient.create(config, { compose: async () => state });
+    await expect(client.listFriends()).resolves.toMatchObject({ status: "success" });
+    expect(state.friends.list).toHaveBeenCalledOnce();
+    await client.close();
+  });
+
   it("rejects operations after close", async () => {
     const client = await SnapchatClient.create(config, { compose: async () => components([]) });
     await client.close();
@@ -96,5 +112,153 @@ describe("SnapchatClient", () => {
     const client = await SnapchatClient.create(config, { compose: async () => state });
     await expect(client.close()).rejects.toThrow("close failed");
     expect(events).toEqual(["gateway.close", "runtime.shutdown", "lock.release"]);
+  });
+
+  it("persists refreshed auth before updating the runtime and retrying a read-only friend sync", async () => {
+    vi.resetModules();
+    const { AppError } = await import("../src/errors.js");
+    const initialSession = {
+      formatVersion: 1 as const,
+      accountId: "account",
+      buildId: "8dd50222" as const,
+      exportedAt: "2026-08-12T00:00:00.000Z",
+      auth: {
+        httpToken: "initial-http-token",
+        gatewayToken: "initial-gateway-token",
+        cookieHeader: "initial-web-cookie",
+        ssoCookieHeader: "initial-sso-cookie",
+        requestHeaders: { "mcs-cof-ids-bin": "initial-cof-sequence" },
+      },
+      assets: [],
+      localStorage: {},
+      sessionStorage: {},
+      indexedDb: { databases: [] },
+    };
+    const refreshedSession = {
+      ...initialSession,
+      exportedAt: "2026-08-12T00:05:00.000Z",
+      auth: {
+        httpToken: "refreshed-http-token",
+        gatewayToken: "refreshed-gateway-token",
+        cookieHeader: "refreshed-web-cookie",
+        ssoCookieHeader: "refreshed-sso-cookie",
+        requestHeaders: { "mcs-cof-ids-bin": "refreshed-cof-sequence" },
+      },
+    };
+    const snapshot = {
+      syncedAt: "2026-08-12T00:00:00.000Z",
+      status: "success" as const,
+      friends: [],
+      incomingRequests: [],
+    };
+    const events: string[] = [];
+    let persisted = initialSession;
+    let runtimeUpdated = false;
+    const lock = {
+      path: "lock",
+      release: vi.fn(async () => { events.push("lock.release"); }),
+      [Symbol.asyncDispose]: async () => undefined,
+    };
+    const runtime = {
+      initialize: vi.fn(async () => {
+        events.push("runtime.initialize");
+        return { buildId: "8dd50222", initializedAt: "2026-08-12T00:00:00.000Z" };
+      }),
+      updateAuth: vi.fn(async () => {
+        events.push("runtime.updateAuth");
+        runtimeUpdated = true;
+      }),
+      syncFriends: vi.fn(async () => {
+        events.push("runtime.syncFriends");
+        if (!runtimeUpdated) throw new AppError("SESSION_EXPIRED", "friend sync expired");
+        return snapshot;
+      }),
+      shutdown: vi.fn(async () => { events.push("runtime.shutdown"); }),
+    };
+
+    vi.doMock("../src/session/loader.js", () => ({
+      loadSession: vi.fn(async () => persisted),
+    }));
+    vi.doMock("../src/compat/asset-loader.js", () => ({
+      AssetLoader: class {},
+    }));
+    vi.doMock("../src/compat/guard.js", () => ({
+      CompatibilityGuard: class {
+        async verify(): Promise<void> {
+          events.push("compat.verify");
+        }
+      },
+    }));
+    vi.doMock("../src/session/account-lock.js", () => ({
+      AccountLock: class {
+        async acquire() {
+          events.push("lock.acquire");
+          return lock;
+        }
+      },
+    }));
+    vi.doMock("../src/session/state-store.js", () => ({
+      AtomicJsonStore: class {
+        async read() {
+          events.push("store.read");
+          return persisted;
+        }
+
+        async write(value: typeof persisted) {
+          events.push("store.write");
+          persisted = value;
+        }
+      },
+    }));
+    vi.doMock("../src/runtime/worker-client.js", () => ({
+      ContentRuntimeClient: class {
+        initialize = runtime.initialize;
+        updateAuth = runtime.updateAuth;
+        syncFriends = runtime.syncFriends;
+        shutdown = runtime.shutdown;
+      },
+    }));
+    vi.doMock("../src/transport/sso-auth-refresh.js", () => ({
+      refreshSnapchatSso: vi.fn(async () => {
+        events.push("auth.refresh");
+        return refreshedSession;
+      }),
+    }));
+    vi.doMock("../src/transport/grpc-client.js", () => ({
+      GrpcWebClient: class {},
+    }));
+    vi.doMock("../src/messaging/client.js", () => ({
+      MessagingClient: class {
+        sendText = vi.fn(async () => ({ clientMessageId: "message-id", status: "confirmed" as const }));
+        messages = vi.fn(() => (async function* () {})());
+      },
+    }));
+    vi.doMock("../src/media/client.js", () => ({
+      MediaClient: class {
+        sendPhotoSnap = vi.fn(async () => ({ clientMessageId: "photo-id", status: "confirmed" as const }));
+      },
+    }));
+    vi.doMock("../src/gateway/client.js", () => ({
+      GatewayClient: class {
+        async connect(): Promise<void> {}
+        async close(): Promise<void> { events.push("gateway.close"); }
+        status() { return "idle" as const; }
+        async *events() {}
+      },
+    }));
+
+    const { SnapchatClient: ComposeDefaultClient } = await import("../src/client.js");
+    const client = await ComposeDefaultClient.create(config);
+    expect(events).not.toContain("runtime.updateAuth");
+
+    await expect(client.listFriends()).resolves.toEqual(snapshot);
+
+    expect(runtime.updateAuth).toHaveBeenCalledOnce();
+    expect(events.indexOf("store.write")).toBeGreaterThan(events.indexOf("store.read"));
+    expect(events.indexOf("runtime.updateAuth")).toBeGreaterThan(events.indexOf("store.write"));
+    expect(events.lastIndexOf("runtime.syncFriends")).toBeGreaterThan(events.indexOf("runtime.updateAuth"));
+    expect(persisted.exportedAt).toBe("2026-08-12T00:05:00.000Z");
+
+    await client.close();
   });
 });

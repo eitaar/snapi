@@ -2,6 +2,7 @@ import { parentPort as nullableParentPort, workerData } from "node:worker_thread
 
 const parentPort = nullableParentPort;
 if (parentPort === null) throw new Error("runtime fixture requires a parent port");
+let authUpdated = false;
 
 parentPort.on("message", (request: Record<string, unknown>) => {
   const id = request.id as number;
@@ -14,6 +15,7 @@ parentPort.on("message", (request: Record<string, unknown>) => {
     const initializedAt = session.accountId === "network-option"
       ? String((workerData as { allowNetwork?: boolean }).allowNetwork === true)
       : "2026-08-10T00:00:00.000Z";
+    authUpdated = false;
     parentPort.postMessage({ id, ok: true, value: { buildId: "8dd50222", initializedAt } });
     return;
   }
@@ -53,6 +55,24 @@ parentPort.on("message", (request: Record<string, unknown>) => {
       id,
       ok: false,
       error: { code: "SESSION_REEXPORT_REQUIRED", message: "refresh unavailable", details: { safe: true } },
+    });
+    return;
+  }
+  if (request.method === "updateAuth") {
+    authUpdated = true;
+    parentPort.postMessage({ id, ok: true, value: undefined });
+    return;
+  }
+  if (request.method === "syncFriends") {
+    parentPort.postMessage({
+      id,
+      ok: true,
+      value: {
+        syncedAt: authUpdated ? "2026-08-12T00:00:00.000Z" : "2026-08-10T00:00:00.000Z",
+        status: "success",
+        friends: [],
+        incomingRequests: [],
+      },
     });
     return;
   }

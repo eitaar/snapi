@@ -1,12 +1,14 @@
 import { Worker, type TransferListItem } from "node:worker_threads";
 import { AppError } from "../errors.js";
 import type { SessionExport } from "../session/types.js";
+import type { FriendSnapshot } from "../friends/types.js";
 import type {
   AuthRefreshResult,
   ChatInput,
   ChatMessage,
   CryptoStateExport,
   EncryptedContent,
+  IncomingSnap,
   PhotoSnapInput,
   RuntimeStatus,
 } from "./content-types.js";
@@ -120,6 +122,10 @@ export class ContentRuntimeClient {
     return this.call({ method: "initialize", session });
   }
 
+  updateAuth(session: SessionExport): Promise<void> {
+    return this.call({ method: "updateAuth", session });
+  }
+
   encryptChat(input: ChatInput): Promise<EncryptedContent> {
     return this.call({ method: "encryptChat", input });
   }
@@ -146,6 +152,14 @@ export class ContentRuntimeClient {
 
   drainChatMessages(): Promise<readonly ChatMessage[]> {
     return this.call({ method: "drainChatMessages" });
+  }
+
+  drainSnapMessages(): Promise<readonly IncomingSnap[]> {
+    return this.call({ method: "drainSnapMessages" });
+  }
+
+  syncFriends(): Promise<FriendSnapshot> {
+    return this.call({ method: "syncFriends" });
   }
 
   async shutdown(): Promise<void> {

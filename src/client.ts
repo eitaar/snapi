@@ -146,11 +146,15 @@ async function composeDefault(config: AppConfig): Promise<SnapchatClientComponen
       refresh: (session) => refreshSnapchatSso(session, createCliRenewalDependencies(config, session)),
       persist: async (refreshed) => {
         const latest = await sessionStore.read();
-        await sessionStore.write({
+        const persisted = {
           ...latest,
           exportedAt: refreshed.exportedAt,
           auth: refreshed.auth,
-        });
+        };
+        await sessionStore.write(persisted);
+        if (runtime !== undefined) {
+          await runtime.updateAuth(persisted);
+        }
       },
     });
     await auth.getRequestAuth();
@@ -169,7 +173,21 @@ async function composeDefault(config: AppConfig): Promise<SnapchatClientComponen
     };
     const messaging = new MessagingClient({ runtime, grpc, stateStore: cryptoStateStore });
     const media = new MediaClient({ runtime, grpc, stateStore: cryptoStateStore });
-    const friends = new FriendsClient({ runtime });
+    const friends = new FriendsClient({
+      runtime: {
+        syncFriends: async () => {
+          try {
+            return await runtime.syncFriends();
+          } catch (error) {
+            if (!(error instanceof AppError) || error.code !== "SESSION_EXPIRED") {
+              throw error;
+            }
+            await auth.refreshOnce({ kind: "expired" });
+            return runtime.syncFriends();
+          }
+        },
+      },
+    });
     const gateway = new GatewayClient({ auth });
     return { messaging, media, friends, gateway, runtime, lock };
   } catch (error) {

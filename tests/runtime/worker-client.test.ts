@@ -15,7 +15,21 @@ function session(accountId = "account-1"): SessionExport {
   };
 }
 
-function client(timeoutMs = 1_000): ContentRuntimeClient {
+function refreshedSession(accountId = "account-1"): SessionExport {
+  return {
+    ...session(accountId),
+    exportedAt: "2026-08-12T00:00:00.000Z",
+    auth: {
+      httpToken: "updated-http-token",
+      gatewayToken: "updated-gateway-token",
+      cookieHeader: "updated-web-cookie",
+      ssoCookieHeader: "updated-sso-cookie",
+      requestHeaders: { "mcs-cof-ids-bin": "updated-cof-sequence" },
+    },
+  };
+}
+
+function client(timeoutMs = 10_000): ContentRuntimeClient {
   return new ContentRuntimeClient({
     workerUrl: new URL("../fixtures/runtime-worker.ts", import.meta.url),
     timeoutMs,
@@ -69,6 +83,33 @@ describe("ContentRuntimeClient", () => {
       code: "SESSION_REEXPORT_REQUIRED",
       message: "refresh unavailable",
       details: { safe: true },
+    });
+    await runtime.shutdown();
+  });
+
+  it("requests a safe friend snapshot from the runtime Worker", async () => {
+    const runtime = client();
+    await runtime.initialize(session());
+    await expect(runtime.syncFriends()).resolves.toEqual({
+      syncedAt: "2026-08-10T00:00:00.000Z",
+      status: "success",
+      friends: [],
+      incomingRequests: [],
+    });
+    await runtime.shutdown();
+  });
+
+  it("propagates refreshed auth to the existing runtime before the next read-only operation", async () => {
+    const runtime = client();
+    await runtime.initialize(session());
+    await expect(runtime.syncFriends()).resolves.toMatchObject({
+      syncedAt: "2026-08-10T00:00:00.000Z",
+    });
+
+    await runtime.updateAuth(refreshedSession());
+
+    await expect(runtime.syncFriends()).resolves.toMatchObject({
+      syncedAt: "2026-08-12T00:00:00.000Z",
     });
     await runtime.shutdown();
   });
