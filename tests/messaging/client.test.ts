@@ -1,7 +1,7 @@
 import { describe, expect, it, vi } from "vitest";
 import { AppError } from "../../src/errors.js";
 import { MAX_CHAT_UTF8_BYTES, MessagingClient } from "../../src/messaging/client.js";
-import type { ChatMessage, EncryptedContent } from "../../src/runtime/content-types.js";
+import type { ChatMessage, EncryptedContent, IncomingSnap } from "../../src/runtime/content-types.js";
 
 function dependencies(events: string[]) {
   return {
@@ -20,6 +20,7 @@ function dependencies(events: string[]) {
       }),
       syncMessages: vi.fn(async () => { events.push("sync"); }),
       drainChatMessages: vi.fn(async (): Promise<readonly ChatMessage[]> => []),
+      drainSnapMessages: vi.fn(async (): Promise<readonly IncomingSnap[]> => []),
     },
     grpc: {
       unary: vi.fn(async () => {
@@ -159,6 +160,36 @@ describe("MessagingClient", () => {
     deps.stateStore.write.mockRejectedValueOnce(new Error("disk full"));
     const iterator = new MessagingClient({ ...deps, pollDelayMs: 1 }).messages();
     await expect(iterator.next()).rejects.toThrow("disk full");
+  });
+
+  it("persists received Snap state before ordered emission and deduplicates IDs", async () => {
+    const events: string[] = [];
+    const deps = dependencies(events);
+    const snap = {
+      type: "snap.received" as const,
+      senderId: "sender",
+      conversationId: "conversation",
+      messageId: "snap-message",
+      timestamp: "2026-08-11T00:00:00.000Z",
+      media: [{
+        bytes: new Uint8Array([1, 2, 3]),
+        mimeType: "image/jpeg",
+        hasAudio: false,
+      }],
+    };
+    deps.runtime.drainSnapMessages
+      .mockResolvedValueOnce([snap, snap])
+      .mockResolvedValueOnce([]);
+
+    const iterator = new MessagingClient({ ...deps, pollDelayMs: 1 }).snaps();
+
+    await expect(iterator.next()).resolves.toEqual({
+      value: snap,
+      done: false,
+    });
+    expect(events).toEqual(["export", "persist"]);
+    expect(deps.runtime.exportState).toHaveBeenCalledOnce();
+    await iterator.return?.();
   });
 
   it("ends message watching promptly when cancelled", async () => {

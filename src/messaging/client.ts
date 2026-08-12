@@ -1,6 +1,6 @@
 import { randomUUID } from "node:crypto";
 import { AppError } from "../errors.js";
-import type { ChatMessage, CryptoStateExport, EncryptedContent } from "../runtime/content-types.js";
+import type { ChatMessage, CryptoStateExport, EncryptedContent, IncomingSnap } from "../runtime/content-types.js";
 import type { UnaryCallOptions, UnaryResult } from "../transport/grpc-client.js";
 
 export const MAX_CHAT_UTF8_BYTES = 16_384;
@@ -22,6 +22,10 @@ export interface ChatMessageEvent extends ChatMessage {
   readonly type: "chat.message";
 }
 
+export interface SnapMessageEvent extends IncomingSnap {
+  readonly type: "snap.received";
+}
+
 interface MessagingRuntime {
   encryptChat(input: {
     readonly recipientId: string;
@@ -32,6 +36,7 @@ interface MessagingRuntime {
   exportState(): Promise<CryptoStateExport>;
   syncMessages(): Promise<void>;
   drainChatMessages(): Promise<readonly ChatMessage[]>;
+  drainSnapMessages?(): Promise<readonly IncomingSnap[]>;
 }
 
 interface MessagingGrpc {
@@ -64,6 +69,7 @@ export interface MessagingClientDependencies {
 
 export class MessagingClient {
   private readonly seenMessageIds = new Set<string>();
+  private readonly seenSnapMessageIds = new Set<string>();
 
   constructor(private readonly dependencies: MessagingClientDependencies) {}
 
@@ -154,6 +160,46 @@ export class MessagingClient {
           await dependencies.stateStore.write(state);
           seen.add(message.messageId);
           yield { type: "chat.message", ...message };
+        }
+      }
+    })();
+  }
+
+  snaps(signal?: AbortSignal): AsyncIterableIterator<SnapMessageEvent> {
+    const dependencies = this.dependencies;
+    const drainSnapMessages = dependencies.runtime.drainSnapMessages;
+    const seen = this.seenSnapMessageIds;
+    const delayMs = dependencies.pollDelayMs ?? 250;
+    return (async function* (): AsyncGenerator<SnapMessageEvent> {
+      if (signal?.aborted) return;
+      if (drainSnapMessages === undefined) {
+        throw new AppError("UNSUPPORTED_BUILD", "Incoming Snap media is not available");
+      }
+      while (!signal?.aborted) {
+        const messages = await drainSnapMessages.call(dependencies.runtime);
+        if (messages.length === 0) {
+          await new Promise<void>((resolve) => {
+            let timer: ReturnType<typeof setTimeout>;
+            const onAbort = () => {
+              clearTimeout(timer);
+              resolve();
+            };
+            timer = setTimeout(() => {
+              signal?.removeEventListener("abort", onAbort);
+              resolve();
+            }, delayMs);
+            signal?.addEventListener("abort", onAbort, { once: true });
+            if (signal?.aborted) onAbort();
+          });
+          continue;
+        }
+        for (const message of messages) {
+          if (signal?.aborted) return;
+          if (seen.has(message.messageId)) continue;
+          const state = await dependencies.runtime.exportState();
+          await dependencies.stateStore.write(state);
+          seen.add(message.messageId);
+          yield message;
         }
       }
     })();

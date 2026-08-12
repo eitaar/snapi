@@ -113,20 +113,26 @@ function createCliRenewalDependencies(
   session: SessionExport,
 ): SsoRefreshDependencies {
   const options = resolveCliRenewalOptions(session);
-  const dependencies: SsoRefreshDependencies = {};
-  if (options.allowLegacyBraveCookies && options.profileDir !== undefined) {
-    dependencies.cookieSource = () => readBraveCookieHeader(options.profileDir);
-  }
-  if (options.allowDbsc) {
-    dependencies.dbsc = (cookieHeader) => refreshBraveDbsc(
-      cookieHeader,
-      options.profileDir === undefined ? {} : { profileDir: options.profileDir },
-    );
-  }
-  if (options.allowWebAttestation) {
-    dependencies.attestation = (value) => finalizeWebAttestation(value.accountId, { assetDir: config.assetDir });
-  }
-  return dependencies;
+  return {
+    ...(options.allowLegacyBraveCookies && options.profileDir !== undefined
+      ? {
+          cookieSource: (): Promise<string> => readBraveCookieHeader(options.profileDir!),
+        }
+      : {}),
+    ...(options.allowDbsc
+      ? {
+          dbsc: (cookieHeader: string) => refreshBraveDbsc(
+            cookieHeader,
+            options.profileDir === undefined ? {} : { profileDir: options.profileDir },
+          ),
+        }
+      : {}),
+    ...(options.allowWebAttestation
+      ? {
+          attestation: (value: SessionExport) => finalizeWebAttestation(value.accountId, { assetDir: config.assetDir }),
+        }
+      : {}),
+  };
 }
 
 async function composeDefault(config: AppConfig): Promise<SnapchatClientComponents> {
@@ -158,12 +164,13 @@ async function composeDefault(config: AppConfig): Promise<SnapchatClientComponen
       },
     });
     await auth.getRequestAuth();
-    runtime = new ContentRuntimeClient({
+    const initializedRuntime = new ContentRuntimeClient({
       assetDir: config.assetDir,
       allowNetwork: true,
       timeoutMs: 90_000,
     });
-    await runtime.initialize(auth.sessionSnapshot());
+    runtime = initializedRuntime;
+    await initializedRuntime.initialize(auth.sessionSnapshot());
     const grpc = new GrpcWebClient({ auth });
     const cryptoStateStore = {
       write: async (state: CryptoStateExport) => {
@@ -171,25 +178,25 @@ async function composeDefault(config: AppConfig): Promise<SnapchatClientComponen
         await sessionStore.write(mergeCryptoState(latest, state));
       },
     };
-    const messaging = new MessagingClient({ runtime, grpc, stateStore: cryptoStateStore });
-    const media = new MediaClient({ runtime, grpc, stateStore: cryptoStateStore });
+    const messaging = new MessagingClient({ runtime: initializedRuntime, grpc, stateStore: cryptoStateStore });
+    const media = new MediaClient({ runtime: initializedRuntime, grpc, stateStore: cryptoStateStore });
     const friends = new FriendsClient({
       runtime: {
         syncFriends: async () => {
           try {
-            return await runtime.syncFriends();
+            return await initializedRuntime.syncFriends();
           } catch (error) {
             if (!(error instanceof AppError) || error.code !== "SESSION_EXPIRED") {
               throw error;
             }
             await auth.refreshOnce({ kind: "expired" });
-            return runtime.syncFriends();
+            return initializedRuntime.syncFriends();
           }
         },
       },
     });
     const gateway = new GatewayClient({ auth });
-    return { messaging, media, friends, gateway, runtime, lock };
+    return { messaging, media, friends, gateway, runtime: initializedRuntime, lock };
   } catch (error) {
     await runtime?.shutdown().catch(() => undefined);
     await lock.release().catch(() => undefined);

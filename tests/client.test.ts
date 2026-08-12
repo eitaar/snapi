@@ -24,6 +24,20 @@ function components(events: string[]): SnapchatClientComponents {
           timestamp: "now",
         };
       })()),
+      snaps: vi.fn(() => (async function* () {
+        yield {
+          type: "snap.received" as const,
+          senderId: "sender",
+          conversationId: "conversation",
+          messageId: "snap-message",
+          timestamp: "now",
+          media: [{
+            bytes: new Uint8Array([1, 2, 3]),
+            mimeType: "image/jpeg",
+            hasAudio: false,
+          }],
+        };
+      })()),
     },
     media: {
       sendPhotoSnap: vi.fn(async () => ({ clientMessageId: "photo-id", status: "confirmed" as const })),
@@ -92,6 +106,24 @@ describe("SnapchatClient", () => {
     const client = await SnapchatClient.create(config, { compose: async () => state });
     await expect(client.listFriends()).resolves.toMatchObject({ status: "success" });
     expect(state.friends.list).toHaveBeenCalledOnce();
+    await client.close();
+  });
+
+  it("delegates incoming Snap watching when the messaging component exposes it", async () => {
+    const state = components([]);
+    const client = await SnapchatClient.create(config, { compose: async () => state });
+
+    const iterator = client.watchSnaps();
+    await expect(iterator.next()).resolves.toEqual({
+      done: false,
+      value: expect.objectContaining({
+        type: "snap.received",
+        messageId: "snap-message",
+      }),
+    });
+    expect(state.messaging.snaps).toHaveBeenCalledOnce();
+
+    await iterator.return?.();
     await client.close();
   });
 
