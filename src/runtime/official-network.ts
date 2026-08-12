@@ -30,11 +30,15 @@ export interface OfficialNetworkBoundary {
 export interface OfficialNetworkCredentials {
   readonly webCookieHeader: () => string | undefined;
   readonly ssoCookieHeader?: () => string | undefined;
+  readonly httpToken?: () => string | undefined;
 }
 
 const CAPTURE_READ_ONLY_PATHS = new Set([
   "/messagingcoreservice.MessagingCoreService/DeltaSync",
   "/messagingcoreservice.MessagingCoreService/GetGroups",
+  "/com.snapchat.deltaforce.external.DeltaForce/DeltaSync",
+  "/com.snapchat.atlas.gw.AtlasGw/SyncFriendData",
+  "/snapchat.friending.server.FriendRequests/IncomingFriendSync",
 ]);
 
 const CAPTURE_LOCAL_ACK_PATHS = new Set(["/graphene/web"]);
@@ -89,13 +93,22 @@ function withCookie(
   const isSsoContext = url.origin === "https://accounts.snapchat.com" && url.pathname === "/accounts/sso";
   if (!isWebContext && !isSsoContext) return undefined;
   const headers = new Headers(request.headers);
+  if (isWebContext && credentials !== undefined) {
+    const token = credentials.httpToken?.();
+    if (token !== undefined && token.trim() !== "") {
+      headers.set("authorization", `Bearer ${token}`);
+    }
+  }
   if (!headers.has("cookie") && credentials !== undefined) {
     const cookie = isWebContext
       ? credentials.webCookieHeader()
       : credentials.ssoCookieHeader?.();
     if (cookie !== undefined && cookie.trim() !== "") headers.set("cookie", cookie);
   }
-  if (headers.get("cookie") === request.headers.get("cookie")) return undefined;
+  if (
+    headers.get("cookie") === request.headers.get("cookie") &&
+    headers.get("authorization") === request.headers.get("authorization")
+  ) return undefined;
   return new Request(request, { headers });
 }
 

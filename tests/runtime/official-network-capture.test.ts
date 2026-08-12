@@ -45,6 +45,28 @@ describe("official capture-only network boundary", () => {
     expect(JSON.stringify(boundary.drainObservedRequests())).not.toContain("cookie-sentinel");
   });
 
+  it("replaces a stale official bearer with the current host token", async () => {
+    let authorization: string | null = null;
+    const boundary = createOfficialNetworkBoundary(
+      true,
+      async (input, init) => {
+        authorization = new Request(input, init).headers.get("authorization");
+        return new Response(null, { status: 200 });
+      },
+      {
+        webCookieHeader: () => "cookie-sentinel",
+        httpToken: () => "current-token",
+      },
+    );
+
+    await boundary.fetch(
+      "https://web.snapchat.com/snapchat.friending.server.FriendRequests/IncomingFriendSync",
+      { method: "POST", headers: { authorization: "Bearer stale-token" } },
+    );
+
+    expect(authorization).toBe("Bearer current-token");
+  });
+
   it("records only safe path and status metadata for normal network requests", async () => {
     const boundary = createOfficialNetworkBoundary(true, async () =>
       new Response(null, { status: 401 }));
@@ -234,6 +256,25 @@ describe("official capture-only network boundary", () => {
       url: "https://web.snapchat.com/messagingcoreservice.MessagingCoreService/GetGroups",
       method: "POST",
       body: new Uint8Array([7, 8, 9]),
+      responseStatus: 200,
+    }]);
+  });
+
+  it("passes through exact read-only friend synchronization during capture", async () => {
+    const response = new Response(new Uint8Array([0, 0, 0, 0, 0]), { status: 200 });
+    const networkFetch = vi.fn(async () => response);
+    const boundary = createOfficialNetworkBoundary(true, networkFetch);
+    boundary.beginCaptureOnly();
+
+    await expect(boundary.fetch(
+      "https://web.snapchat.com/snapchat.friending.server.FriendRequests/IncomingFriendSync",
+      { method: "POST", body: new Uint8Array([10, 11]) },
+    )).resolves.toBe(response);
+
+    expect(boundary.drainCapturedRequests()).toEqual([{
+      url: "https://web.snapchat.com/snapchat.friending.server.FriendRequests/IncomingFriendSync",
+      method: "POST",
+      body: new Uint8Array([10, 11]),
       responseStatus: 200,
     }]);
   });

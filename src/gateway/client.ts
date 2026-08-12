@@ -115,12 +115,11 @@ export class GatewayClient {
     const cookie = this.options.auth.getGatewayCookie === undefined
       ? undefined
       : await this.options.auth.getGatewayCookie();
-    const headers = cookie === undefined
-      ? undefined
-      : { cookie, origin: GATEWAY_ORIGIN };
-    const socket = headers === undefined
-      ? this.factory(this.url, ["snap-ws-auth", token])
-      : this.factory(this.url, ["snap-ws-auth", token], headers);
+    const headers = {
+      origin: GATEWAY_ORIGIN,
+      ...(cookie === undefined ? {} : { cookie }),
+    };
+    const socket = this.factory(this.url, ["snap-ws-auth", token], headers);
     this.socket = socket;
     socket.binaryType = "arraybuffer";
 

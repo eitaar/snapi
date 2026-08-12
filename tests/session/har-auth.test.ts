@@ -23,9 +23,25 @@ function har(cookie = "account-session=secret", scuid = session.accountId): unkn
           request: {
             method: "POST",
             url: "https://accounts.snapchat.com/accounts/sso?client_id=web-calling-corp--prod",
-            headers: [{ name: "Cookie", value: cookie }, { name: "scuid", value: scuid }],
+            headers: [
+              { name: "Cookie", value: cookie },
+              { name: "scuid", value: scuid },
+              { name: "Origin", value: "https://www.snapchat.com" },
+              { name: "Referer", value: "https://www.snapchat.com/web" },
+              { name: "User-Agent", value: "Mozilla/5.0 test browser" },
+              { name: "Sec-CH-UA", value: "\"Chromium\";v=\"140\"" },
+              { name: "Sec-CH-UA-Mobile", value: "?0" },
+              { name: "Sec-CH-UA-Platform", value: "\"Windows\"" },
+              { name: "Sec-Fetch-Site", value: "same-site" },
+            ],
           },
-          response: { status: 200, headers: [{ name: "scuid", value: session.accountId }] },
+          response: {
+            status: 200,
+            headers: [
+              { name: "scuid", value: session.accountId },
+              { name: "Set-Cookie", value: "account-session=rotated; Path=/; Secure" },
+            ],
+          },
         },
         {
           startedDateTime: "2026-08-11T00:01:01.000Z",
@@ -63,6 +79,22 @@ function har(cookie = "account-session=secret", scuid = session.accountId): unkn
           },
           response: { status: 200, headers: [] },
         },
+        {
+          startedDateTime: "2026-08-11T00:01:04.000Z",
+          request: {
+            method: "POST",
+            url: "https://web.snapchat.com/web-chat-session/refresh?client_id=web-calling-corp--prod",
+            headers: [
+              { name: "Authorization", value: `Bearer ${token}` },
+              { name: "Cookie", value: "web=fresh" },
+              { name: "Origin", value: "https://www.snapchat.com" },
+              { name: "Referer", value: "https://www.snapchat.com/" },
+              { name: "User-Agent", value: "Mozilla/5.0 heartbeat browser" },
+              { name: "X-Snap-Client-User-Agent", value: "SnapchatWeb/test" },
+            ],
+          },
+          response: { status: 200, headers: [] },
+        },
       ],
     },
   };
@@ -71,13 +103,32 @@ function har(cookie = "account-session=secret", scuid = session.accountId): unkn
 describe("enrichSessionWithHarAuth", () => {
   it("imports authentication proven by successful messaging requests", () => {
     expect(enrichSessionWithHarAuth(session, har())).toMatchObject({
-      exportedAt: "2026-08-11T00:01:02.000Z",
+      exportedAt: "2026-08-11T00:01:04.000Z",
       auth: {
         httpToken: "t".repeat(96),
         gatewayToken: "t".repeat(96),
+        tokenRefreshedAt: "2026-08-11T00:01:02.000Z",
+        webSessionRefreshedAt: "2026-08-11T00:01:04.000Z",
         cookieHeader: "web=fresh",
-        ssoCookieHeader: "account-session=secret",
+        ssoCookieHeader: "account-session=rotated",
         ssoScuid: session.accountId,
+        ssoUsesDbsc: false,
+        ssoUsesAttestation: false,
+        ssoRequestHeaders: {
+          origin: "https://www.snapchat.com",
+          referer: "https://www.snapchat.com/web",
+          "sec-ch-ua": "\"Chromium\";v=\"140\"",
+          "sec-ch-ua-mobile": "?0",
+          "sec-ch-ua-platform": "\"Windows\"",
+          "sec-fetch-site": "same-site",
+          "user-agent": "Mozilla/5.0 test browser",
+        },
+        webSessionRequestHeaders: {
+          origin: "https://www.snapchat.com",
+          referer: "https://www.snapchat.com/",
+          "user-agent": "Mozilla/5.0 heartbeat browser",
+          "x-snap-client-user-agent": "SnapchatWeb/test",
+        },
         requestHeaders: {
           "mcs-cof-ids-bin": "fresh-cof",
           "x-grpc-web": "1",
@@ -86,6 +137,12 @@ describe("enrichSessionWithHarAuth", () => {
         },
       },
     });
+  });
+
+  it("preserves the successful SSO request scuid for future requests", () => {
+    const refreshed = enrichSessionWithHarAuth(session, har("account-session=secret", "1"));
+
+    expect(refreshed.auth.ssoScuid).toBe("1");
   });
 
   it("rejects missing evidence and account mismatches without exposing cookie values", () => {

@@ -46,8 +46,9 @@ export class AuthProvider implements RequestAuthSource {
 
   async getRequestAuth(): Promise<RequestAuth> {
     const now = this.dependencies.now ?? Date.now;
-    const maxAgeMs = this.dependencies.maxAgeMs ?? 3_600_000;
-    if (now() - Date.parse(this.current.exportedAt) >= maxAgeMs) {
+    const maxAgeMs = this.dependencies.maxAgeMs ?? 600_000;
+    const tokenRefreshedAt = this.current.auth.tokenRefreshedAt ?? this.current.exportedAt;
+    if (now() - Date.parse(tokenRefreshedAt) >= maxAgeMs) {
       return this.refreshOnce({ kind: "expired" });
     }
     return this.requestAuth();

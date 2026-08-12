@@ -23,7 +23,7 @@ function session(exportedAt = "2026-08-11T00:30:00.000Z"): SessionExport {
 describe("AuthProvider", () => {
   it("returns current request authentication when the export is fresh", async () => {
     const refresh = vi.fn(async (value: SessionExport) => value);
-    const provider = new AuthProvider(session(), {
+    const provider = new AuthProvider(session("2026-08-11T00:55:00.000Z"), {
       refresh,
       now: () => Date.parse("2026-08-11T01:00:00.000Z"),
     });
@@ -49,7 +49,7 @@ describe("AuthProvider", () => {
     await expect(provider.getGatewayToken()).resolves.toBe("gateway-new");
   });
 
-  it("refreshes a session older than one hour and persists before publishing it", async () => {
+  it("refreshes a token older than ten minutes and persists before publishing it", async () => {
     const refreshed = {
       ...session(),
       exportedAt: "2026-08-11T02:00:00.000Z",

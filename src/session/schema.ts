@@ -209,6 +209,17 @@ export function parseSessionExport(value: unknown): SessionExport {
     auth: {
       httpToken: stringAt(auth.httpToken, "auth.httpToken"),
       gatewayToken: stringAt(auth.gatewayToken, "auth.gatewayToken"),
+      ...(auth.tokenRefreshedAt === undefined
+        ? {}
+        : { tokenRefreshedAt: stringAt(auth.tokenRefreshedAt, "auth.tokenRefreshedAt") }),
+      ...(auth.webSessionRefreshedAt === undefined
+        ? {}
+        : {
+            webSessionRefreshedAt: stringAt(
+              auth.webSessionRefreshedAt,
+              "auth.webSessionRefreshedAt",
+            ),
+          }),
       cookieHeader: stringAt(auth.cookieHeader, "auth.cookieHeader"),
       ...(auth.ssoCookieHeader === undefined
         ? {}
@@ -216,6 +227,23 @@ export function parseSessionExport(value: unknown): SessionExport {
       ...(auth.ssoScuid === undefined
         ? {}
         : { ssoScuid: stringAt(auth.ssoScuid, "auth.ssoScuid") }),
+      ...(auth.ssoUsesDbsc === undefined
+        ? {}
+        : { ssoUsesDbsc: booleanAt(auth.ssoUsesDbsc, "auth.ssoUsesDbsc") }),
+      ...(auth.ssoUsesAttestation === undefined
+        ? {}
+        : { ssoUsesAttestation: booleanAt(auth.ssoUsesAttestation, "auth.ssoUsesAttestation") }),
+      ...(auth.ssoRequestHeaders === undefined
+        ? {}
+        : { ssoRequestHeaders: stringRecordAt(auth.ssoRequestHeaders, "auth.ssoRequestHeaders") }),
+      ...(auth.webSessionRequestHeaders === undefined
+        ? {}
+        : {
+            webSessionRequestHeaders: stringRecordAt(
+              auth.webSessionRequestHeaders,
+              "auth.webSessionRequestHeaders",
+            ),
+          }),
       requestHeaders: stringRecordAt(auth.requestHeaders, "auth.requestHeaders"),
     },
     assets: arrayAt(session.assets, "assets").map(parseAsset),

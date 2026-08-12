@@ -1,8 +1,6 @@
 import { dirname, join } from "node:path";
-import { readBraveCookieHeader } from "./auth/brave-cookies.js";
 import { applyCookieOverrides } from "./auth/cookie-overrides.js";
 import { finalizeWebAttestation } from "./auth/web-attestation.js";
-import { refreshBraveDbsc, resolveOptionalBraveProfileDir } from "./auth/dbsc.js";
 import { AssetLoader } from "./compat/asset-loader.js";
 import { CompatibilityGuard } from "./compat/guard.js";
 import type { AppConfig } from "./config.js";
@@ -21,7 +19,7 @@ import { AtomicJsonStore } from "./session/state-store.js";
 import type { SessionExport } from "./session/types.js";
 import { AuthProvider } from "./transport/auth-provider.js";
 import { GrpcWebClient } from "./transport/grpc-client.js";
-import { refreshSnapchatSso, type SsoRefreshDependencies } from "./transport/sso-auth-refresh.js";
+import { refreshSnapchatSession } from "./transport/sso-auth-refresh.js";
 import type { CryptoStateExport } from "./runtime/content-types.js";
 import type { SnapMessageEvent } from "./messaging/client.js";
 
@@ -63,13 +61,6 @@ export interface SnapchatClientDependencies {
   readonly compose?: (config: AppConfig) => Promise<SnapchatClientComponents>;
 }
 
-export interface CliRenewalOptions {
-  readonly profileDir?: string;
-  readonly allowLegacyBraveCookies: boolean;
-  readonly allowDbsc: boolean;
-  readonly allowWebAttestation: boolean;
-}
-
 function assertConfiguredSession(config: AppConfig, session: SessionExport): void {
   if (session.accountId !== config.accountId) {
     throw new AppError("INVALID_CONFIG", "Configured account does not match the session export");
@@ -98,43 +89,6 @@ function mergeCryptoState(session: SessionExport, state: CryptoStateExport): Ses
   };
 }
 
-function resolveCliRenewalOptions(session: SessionExport): CliRenewalOptions {
-  const profileDir = resolveOptionalBraveProfileDir();
-  return {
-    ...(profileDir === undefined ? {} : { profileDir }),
-    allowLegacyBraveCookies: session.auth.ssoCookieHeader === undefined && profileDir !== undefined,
-    allowDbsc: profileDir !== undefined,
-    allowWebAttestation: true,
-  };
-}
-
-function createCliRenewalDependencies(
-  config: AppConfig,
-  session: SessionExport,
-): SsoRefreshDependencies {
-  const options = resolveCliRenewalOptions(session);
-  return {
-    ...(options.allowLegacyBraveCookies && options.profileDir !== undefined
-      ? {
-          cookieSource: (): Promise<string> => readBraveCookieHeader(options.profileDir!),
-        }
-      : {}),
-    ...(options.allowDbsc
-      ? {
-          dbsc: (cookieHeader: string) => refreshBraveDbsc(
-            cookieHeader,
-            options.profileDir === undefined ? {} : { profileDir: options.profileDir },
-          ),
-        }
-      : {}),
-    ...(options.allowWebAttestation
-      ? {
-          attestation: (value: SessionExport) => finalizeWebAttestation(value.accountId, { assetDir: config.assetDir }),
-        }
-      : {}),
-  };
-}
-
 async function composeDefault(config: AppConfig): Promise<SnapchatClientComponents> {
   const initialSession = await loadSession(config.sessionFile);
   assertConfiguredSession(config, initialSession);
@@ -149,7 +103,9 @@ async function composeDefault(config: AppConfig): Promise<SnapchatClientComponen
     await new CompatibilityGuard(new AssetLoader(config.assetDir)).verify(authSession);
     const sessionStore = new AtomicJsonStore(config.sessionFile, parseSessionExport);
     const auth = new AuthProvider(authSession, {
-      refresh: (session) => refreshSnapchatSso(session, createCliRenewalDependencies(config, session)),
+      refresh: (session) => refreshSnapchatSession(session, {
+        attestation: (value) => finalizeWebAttestation(value.accountId, { assetDir: config.assetDir }),
+      }),
       persist: async (refreshed) => {
         const latest = await sessionStore.read();
         const persisted = {

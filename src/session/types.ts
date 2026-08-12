@@ -54,9 +54,15 @@ export interface SessionExport {
   readonly auth: {
     readonly httpToken: string;
     readonly gatewayToken: string;
+    readonly tokenRefreshedAt?: string;
+    readonly webSessionRefreshedAt?: string;
     readonly cookieHeader: string;
     readonly ssoCookieHeader?: string;
     readonly ssoScuid?: string;
+    readonly ssoUsesDbsc?: boolean;
+    readonly ssoUsesAttestation?: boolean;
+    readonly ssoRequestHeaders?: Readonly<Record<string, string>>;
+    readonly webSessionRequestHeaders?: Readonly<Record<string, string>>;
     readonly requestHeaders: Readonly<Record<string, string>>;
   };
   readonly assets: readonly AssetRecord[];

@@ -8,9 +8,8 @@ protected message envelopes. The current supported Web build is only
 This uses an undocumented private API. Snapchat can change the bundle,
 authentication, protocol, or account policy at any time. Use only managed test
 accounts and conversations you control. The project does not automate login,
-2FA, account recovery, or rate-limit bypass. During token refresh it can run
-the official Web Attestation WASM inside a Node worker, but it never extracts
-or spoofs browser-managed session keys.
+2FA, account recovery, or rate-limit bypass. It never extracts or spoofs
+browser-managed session keys.
 
 ## Requirements and setup
 
@@ -18,9 +17,8 @@ or spoofs browser-managed session keys.
 - A session export from an already logged-in Snapchat Web session (for account,
   build, and runtime state)
 - The exact four pinned assets under `private/assets/`
-- Windows with the matching Brave profile available; close Brave before
-  automatic refresh so its encrypted Cookie and DBSC SQLite stores are
-  readable
+- A fresh HAR containing successful Messaging, Gateway, accounts SSO, and
+  `/web-chat-session/refresh` traffic from the same login epoch
 
 ```powershell
 npm install
@@ -38,16 +36,19 @@ separately when the accounts-domain SSO request uses a different Cookie header.
 These values are never logged, but they are session credentials and must not be
 committed or pasted into chat.
 
-The CLI finds Brave's default profile automatically under `%LOCALAPPDATA%`.
-Set `SNAP_BRAVE_PROFILE_DIR` to the profile's `Default` directory when using a
-different Brave user profile. During refresh the CLI reads legacy v10/v11
-Snapchat Cookie values from that profile and performs DBSC signing from the same
-profile. Current Brave profiles may use v20 App-Bound cookies; those require the
-Brave browser context and are reported as `AUTH_CONTEXT_UNAVAILABLE` by the
-direct CLI.
-When either manual Cookie override is set, the refresh path uses the configured
-header and skips Brave's local Cookie/DBSC readers for that refresh. This is a
-diagnostic override, not a durable authentication mechanism.
+Once `session refresh-har` has imported a complete authentication context, the
+persisted session becomes authoritative and these static environment Cookie
+values no longer override later Cookie rotations. They remain a bootstrap
+fallback for legacy session exports without HAR-managed SSO headers.
+
+Automatic renewal mirrors the two observed browser timers. Roughly every ten
+minutes the CLI runs the pinned official Web Attestation WASM and posts to
+`accounts/sso`; its successful response replaces both the Messaging and Gateway
+Bearer. Roughly hourly it also posts the current Bearer and Web Cookie to
+`/web-chat-session/refresh`; that empty-response heartbeat preserves the Bearer
+and extends the Web session. The captured non-DBSC flow has no Brave dependency.
+If either request rejects the exported login context, a fresh login HAR is
+required.
 
 ## Commands
 
@@ -69,8 +70,10 @@ $env:SNAP_LIVE_TESTS='1'; node dist/cli/index.js debug auth-gap --request privat
 
 `session check` performs shape, account, lock, asset hash, module, and WASM
 checks without authenticated network traffic. `session refresh-har` extracts
-only the accounts-domain SSO request from a fresh sensitive HAR, immediately
-refreshes the short-lived token, and atomically persists the rotated state.
+the browser-issued Messaging/Gateway Bearer, Web Cookie, accounts context, and
+restricted heartbeat headers from a fresh sensitive HAR, then atomically
+persists them. Later successful `accounts/sso` responses are the replacement
+Messaging/Gateway token used by the official Web auth store.
 `session import` validates the export and every declared asset hash while
 holding the account's single-writer lock, then atomically installs it.
 
@@ -105,16 +108,11 @@ npm run test:coverage
 npm run build
 ```
 
-Live verification requires an already logged-in matching Brave profile and
-managed recipient. An expired export first reads compatible Brave cookies, then
-runs standalone Web Attestation and, on Windows, the matching Brave DBSC proof
-path. If the profile is unavailable/locked, uses v20 App-Bound cookies, or
-belongs to another authentication epoch, refresh stops with
-`AUTH_CONTEXT_UNAVAILABLE`; the CLI does not fall back to browser automation or
-claim that a copied Cookie is sufficient unless a manual Cookie override is
-configured. A copied Cookie can test whether local App-Bound decryption is the
-only blocker, but it does not guarantee that Node requests have the browser's
-full context.
+Live verification requires a current browser-issued session and managed
+recipient. Automatic token and heartbeat renewal use direct HTTP plus the
+pinned official attestation runtime; they do not read a Brave profile or
+automate a browser. A rejected renewal stops safely; the CLI does not fall back
+to browser automation.
 
 `debug auth-gap` is limited to one explicitly enabled, read-only request against
 the allowlisted MessagingCoreService `DeltaSync`/`GetGroups` paths or the
@@ -124,7 +122,8 @@ argument must resolve to `SNAP_SESSION_FILE`, and that export must match the
 configured account and build.
 
 `debug auth-renewal --cli-only` is also opt-in and read-only. It requires
-`SNAP_LIVE_TESTS=1`, attempts at most one CLI-only SSO/DBSC renewal plus one
+`SNAP_LIVE_TESTS=1`, attempts at most one CLI-only token renewal, an hourly
+heartbeat when due, and one
 read-only verification request, and never persists refreshed session state from
 this diagnostic path. The protected verification fixture must be named
 `edge-delta-probe.json`, live
@@ -139,8 +138,6 @@ The command returns only sanitized result metadata:
   single read-only verification request succeeded.
 - `browser-context-required`: the refresh or verification path reached a
   browser-bound redirect/forbidden outcome such as HTTP `303` or `403`.
-- `profile-unavailable`: the local Brave/DBSC profile material needed for the
-  CLI-only path was unavailable in the current host context.
 - `rejected`: the local refresh path ran, but the single verification request
   still did not succeed.
 

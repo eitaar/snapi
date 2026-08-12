@@ -1,5 +1,9 @@
 import { describe, expect, it, vi } from "vitest";
-import { refreshSnapchatSso } from "../../src/transport/sso-auth-refresh.js";
+import {
+  refreshSnapchatSession,
+  refreshSnapchatSso,
+  refreshSnapchatWebSession,
+} from "../../src/transport/sso-auth-refresh.js";
 import type { SessionExport } from "../../src/session/types.js";
 
 function session(): SessionExport {
@@ -11,9 +15,17 @@ function session(): SessionExport {
     auth: {
       httpToken: "old-http-token",
       gatewayToken: "old-gateway-token",
-      cookieHeader: "web=only",
-      ssoCookieHeader: "first=one; session=old",
-      ssoScuid: "aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee",
+      cookieHeader: "web=old; retained=value",
+      ssoCookieHeader: "account=old",
+      ssoScuid: "1",
+      ssoRequestHeaders: { "user-agent": "fallback browser" },
+      webSessionRequestHeaders: {
+        origin: "https://www.snapchat.com",
+        referer: "https://www.snapchat.com/",
+        "sec-ch-ua-platform": "\"Windows\"",
+        "user-agent": "captured browser",
+        "x-snap-client-user-agent": "SnapchatWeb/test",
+      },
       requestHeaders: { "mcs-cof-ids-bin": "cof" },
     },
     assets: [],
@@ -23,185 +35,140 @@ function session(): SessionExport {
 }
 
 describe("refreshSnapchatSso", () => {
-  it("refreshes both bearer tokens and merges rotated cookies", async () => {
-    const token = "a".repeat(292);
-    const headers = new Headers({ scuid: session().accountId });
-    headers.append("set-cookie", "session=new; Path=/; Secure; HttpOnly");
-    headers.append("set-cookie", "added=value; Path=/");
+  it("runs the browser Web-session heartbeat without replacing bearer tokens", async () => {
+    const responseHeaders = new Headers();
+    responseHeaders.append("set-cookie", "web=rotated; Path=/; Secure; HttpOnly");
+    responseHeaders.append("set-cookie", "added=value; Path=/");
     const fetch = vi.fn(async (_input: string | URL | Request, _init?: RequestInit) =>
-      new Response(token, { status: 200, headers }));
+      new Response(null, { status: 200, headers: responseHeaders }));
 
-    const refreshed = await refreshSnapchatSso(session(), {
+    const refreshed = await refreshSnapchatWebSession(session(), {
       fetch,
       now: () => new Date("2026-08-11T01:02:03.000Z"),
     });
 
     expect(fetch).toHaveBeenCalledOnce();
     const [url, init] = fetch.mock.calls[0]!;
-    expect(String(url)).toBe("https://accounts.snapchat.com/accounts/sso?client_id=web-calling-corp--prod");
-    expect(init).toMatchObject({ method: "POST", body: null });
-    expect(init?.redirect).toBe("manual");
-    expect(new Headers(init?.headers).get("cookie")).toBe("first=one; session=old");
-    expect(new Headers(init?.headers).get("scuid")).toBe(session().auth.ssoScuid);
+    expect(String(url)).toBe(
+      "https://web.snapchat.com/web-chat-session/refresh?client_id=web-calling-corp--prod",
+    );
+    expect(init).toMatchObject({ method: "POST", body: null, redirect: "manual" });
+    const headers = new Headers(init?.headers);
+    expect(headers.get("authorization")).toBe("Bearer old-http-token");
+    expect(headers.get("cookie")).toBe("web=old; retained=value");
+    expect(headers.get("origin")).toBe("https://www.snapchat.com");
+    expect(headers.get("referer")).toBe("https://www.snapchat.com/");
+    expect(headers.get("user-agent")).toBe("captured browser");
+    expect(headers.get("x-snap-client-user-agent")).toBe("SnapchatWeb/test");
+    expect(headers.has("scuid")).toBe(false);
+    expect(headers.has("snap-att")).toBe(false);
     expect(refreshed).toMatchObject({
       exportedAt: "2026-08-11T01:02:03.000Z",
       auth: {
-        httpToken: token,
-        gatewayToken: token,
-        cookieHeader: "web=only",
-        ssoCookieHeader: "first=one; session=new; added=value",
-        requestHeaders: { "mcs-cof-ids-bin": "cof" },
+        httpToken: "old-http-token",
+        gatewayToken: "old-gateway-token",
+        cookieHeader: "web=rotated; retained=value; added=value",
+        ssoCookieHeader: "account=old",
       },
     });
   });
 
-  it("rejects an account mismatch without exposing the token", async () => {
-    const token = "b".repeat(292);
-    const fetch = vi.fn(async () => new Response(token, {
-      status: 200,
-      headers: { scuid: "aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee" },
-    }));
+  it("uses safe browser defaults for an older export", async () => {
+    const value = session() as SessionExport & {
+      auth: { webSessionRequestHeaders?: Readonly<Record<string, string>> };
+    };
+    delete value.auth.webSessionRequestHeaders;
+    const fetch = vi.fn(async (_input: string | URL | Request, _init?: RequestInit) =>
+      new Response(null, { status: 200 }));
 
-    await expect(refreshSnapchatSso(session(), { fetch })).rejects.toMatchObject({
-      code: "INVALID_SESSION_EXPORT",
-      message: "SSO refresh account does not match the session export",
-    });
-    await expect(refreshSnapchatSso(session(), { fetch })).rejects.not.toThrow(token);
-  });
+    await refreshSnapchatWebSession(value, { fetch });
 
-  it("turns an unauthorized refresh into a safe re-export error", async () => {
-    const fetch = vi.fn(async () => new Response("denied-secret", { status: 401 }));
-
-    await expect(refreshSnapchatSso(session(), { fetch })).rejects.toMatchObject({
-      code: "SESSION_REEXPORT_REQUIRED",
-      details: { status: 401 },
-    });
-  });
-
-  it("adds standalone attestation and classifies a browser-bound redirect", async () => {
-    const fetch = vi.fn<(input: string | URL | Request, init?: RequestInit) => Promise<Response>>(async () => new Response(null, {
-      status: 303,
-      headers: { location: "/v2/login" },
-    }));
-    const attestation = vi.fn(async () => "standalone-proof");
-
-    await expect(refreshSnapchatSso(session(), { fetch, attestation })).rejects.toMatchObject({
-      code: "AUTH_CONTEXT_UNAVAILABLE",
-      details: {
-        status: 303,
-        hasAttestation: true,
-        locationOrigin: "https://accounts.snapchat.com",
-        locationPath: "/v2/login",
-        locationQueryKeys: [],
-        locationHasCode: false,
-        locationHasError: false,
-      },
-    });
     const [, init] = fetch.mock.calls[0]!;
-    expect(new Headers(init?.headers).get("snap-att")).toBe("standalone-proof");
-    expect(init?.redirect).toBe("manual");
+    const headers = new Headers(init?.headers);
+    expect(headers.get("origin")).toBe("https://www.snapchat.com");
+    expect(headers.get("referer")).toBe("https://www.snapchat.com/");
+    expect(headers.get("user-agent")).toBe("fallback browser");
   });
 
-  it("uses a DBSC-refreshed cookie for the SSO request", async () => {
-    const token = "c".repeat(292);
-    const fetch = vi.fn(async (_input: string | URL | Request, _init?: RequestInit) => new Response(token, {
-      status: 200,
-      headers: { scuid: session().accountId },
-    }));
-    const dbsc = vi.fn(async (cookieHeader: string) => ({
-      cookieHeader: `${cookieHeader}; dbsc-refreshed=yes`,
-    }));
-
-    await refreshSnapchatSso(session(), { fetch, dbsc });
-
-    expect(dbsc).toHaveBeenCalledOnce();
-    const [, init] = fetch.mock.calls[0]!;
-    expect(new Headers(init?.headers).has("cookie")).toBe(true);
-  });
-
-  it("uses an explicit SSO Cookie source before a profile source", async () => {
-    const events: string[] = [];
-    const token = "e".repeat(292);
-    const fetch = vi.fn(async () => {
-      events.push("fetch");
-      return new Response(token, {
-        status: 200,
-        headers: { scuid: session().accountId },
-      });
-    });
-    const cookieSource = vi.fn(async () => {
-      events.push("cookieSource");
-      return "live=session";
-    });
-    const dbsc = vi.fn(async (cookieHeader: string) => {
-      expect(cookieHeader).toEqual(expect.any(String));
-      events.push("dbsc");
-      return { cookieHeader };
-    });
-
-    await refreshSnapchatSso(session(), { fetch, cookieSource, dbsc });
-
-    expect(cookieSource).not.toHaveBeenCalled();
-    expect(events).toEqual(["dbsc", "fetch"]);
-  });
-
-  it("uses the live browser cookie source before DBSC refresh", async () => {
-    const liveSession = session() as SessionExport & { auth: { ssoCookieHeader?: string } };
-    delete liveSession.auth.ssoCookieHeader;
-    const token = "d".repeat(292);
-    const fetch = vi.fn(async (_input: string | URL | Request, init?: RequestInit) => {
-      expect(new Headers(init?.headers).has("cookie")).toBe(true);
-      return new Response(token, {
-        status: 200,
-        headers: { scuid: session().accountId },
-      });
-    });
-    const cookieSource = vi.fn(async () => "live=session; sc-a-dbsc-session=current");
-    const dbsc = vi.fn(async (cookieHeader: string) => ({
-      cookieHeader: `${cookieHeader}; dbsc-refreshed=yes`,
-    }));
-
-    await refreshSnapchatSso(liveSession, { fetch, cookieSource, dbsc });
-
-    expect(cookieSource).toHaveBeenCalledOnce();
-    expect(dbsc).toHaveBeenCalledOnce();
-  });
-
-  it("does not treat a 303 or 403 as a successful refresh", async () => {
-    for (const [status, location] of [[303, "/v2/login"], [403, undefined]] as const) {
+  it("classifies redirects and authorization failures as an expired export", async () => {
+    for (const [status, location] of [[303, "/v2/login?code=secret"], [403, undefined]] as const) {
       const fetch = vi.fn(async () => new Response(null, {
         status,
         ...(location === undefined ? {} : { headers: { location } }),
       }));
 
-      await expect(refreshSnapchatSso(session(), { fetch })).rejects.toMatchObject({
-        code: "AUTH_CONTEXT_UNAVAILABLE",
+      await expect(refreshSnapchatWebSession(session(), { fetch })).rejects.toMatchObject({
+        code: "SESSION_REEXPORT_REQUIRED",
         details: { status },
       });
+      await expect(refreshSnapchatWebSession(session(), { fetch })).rejects.not.toThrow("secret");
     }
   });
 
-  it("rejects a malformed successful response", async () => {
-    const fetch = vi.fn(async () => new Response("too-short", {
-      status: 200,
-      headers: { scuid: session().accountId },
-    }));
+  it("rejects other HTTP failures without exposing response data", async () => {
+    const fetch = vi.fn(async () => new Response("response-secret", { status: 500 }));
 
-    await expect(refreshSnapchatSso(session(), { fetch })).rejects.toMatchObject({
+    await expect(refreshSnapchatWebSession(session(), { fetch })).rejects.toMatchObject({
       code: "SESSION_REEXPORT_REQUIRED",
-      message: "SSO refresh returned an invalid token",
+      details: { status: 500 },
     });
+    await expect(refreshSnapchatWebSession(session(), { fetch })).rejects.not.toThrow("response-secret");
   });
 
-  it("fails before network access when the SSO-domain cookie export is absent", async () => {
-    const value = session() as SessionExport & { auth: { ssoCookieHeader?: string } };
-    delete value.auth.ssoCookieHeader;
-    const fetch = vi.fn();
+  it("wraps network failures without exposing their message", async () => {
+    const fetch = vi.fn(async () => { throw new Error("network-secret"); });
 
-    await expect(refreshSnapchatSso(value, { fetch })).rejects.toMatchObject({
+    await expect(refreshSnapchatWebSession(session(), { fetch })).rejects.toMatchObject({
       code: "SESSION_REEXPORT_REQUIRED",
-      message: "Session export is missing the accounts-domain SSO cookie",
+      message: "Unable to refresh the exported Web session",
+      details: { errorName: "Error" },
     });
-    expect(fetch).not.toHaveBeenCalled();
+    await expect(refreshSnapchatWebSession(session(), { fetch })).rejects.not.toThrow("network-secret");
+  });
+
+  it("renews the shared HTTP and Gateway token through accounts SSO", async () => {
+    const token = "n".repeat(292);
+    const fetch = vi.fn(async (_input: string | URL | Request, _init?: RequestInit) =>
+      new Response(token, { status: 200, headers: { scuid: session().accountId } }));
+    const attestation = vi.fn(async () => "attestation-proof");
+
+    const refreshed = await refreshSnapchatSso(session(), {
+      fetch,
+      attestation,
+      now: () => new Date("2026-08-11T01:02:03.000Z"),
+    });
+
+    const [url, init] = fetch.mock.calls[0]!;
+    expect(String(url)).toBe(
+      "https://accounts.snapchat.com/accounts/sso?client_id=web-calling-corp--prod",
+    );
+    const headers = new Headers(init?.headers);
+    expect(headers.get("snap-att")).toBe("attestation-proof");
+    expect(headers.get("cookie")).toBe("account=old");
+    expect(headers.has("scuid")).toBe(false);
+    expect(refreshed.auth.httpToken).toBe(token);
+    expect(refreshed.auth.gatewayToken).toBe(token);
+    expect(refreshed.auth.tokenRefreshedAt).toBe("2026-08-11T01:02:03.000Z");
+  });
+
+  it("runs SSO renewal and a due Web heartbeat as one CLI refresh", async () => {
+    const token = "r".repeat(292);
+    const calls: string[] = [];
+    const fetch = vi.fn(async (input: string | URL | Request, init?: RequestInit) => {
+      const url = String(input);
+      calls.push(new URL(url).pathname);
+      if (url.includes("accounts.snapchat.com")) return new Response(token, { status: 200 });
+      expect(new Headers(init?.headers).get("authorization")).toBe(`Bearer ${token}`);
+      return new Response(null, { status: 200 });
+    });
+
+    const refreshed = await refreshSnapchatSession(session(), {
+      fetch,
+      now: () => new Date("2026-08-11T02:00:00.000Z"),
+    });
+
+    expect(calls).toEqual(["/accounts/sso", "/web-chat-session/refresh"]);
+    expect(refreshed.auth.httpToken).toBe(token);
+    expect(refreshed.auth.webSessionRefreshedAt).toBe("2026-08-11T02:00:00.000Z");
   });
 });

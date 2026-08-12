@@ -157,6 +157,7 @@ describe("SnapchatClient", () => {
       auth: {
         httpToken: "initial-http-token",
         gatewayToken: "initial-gateway-token",
+        tokenRefreshedAt: "2099-08-12T00:00:00.000Z",
         cookieHeader: "initial-web-cookie",
         ssoCookieHeader: "initial-sso-cookie",
         requestHeaders: { "mcs-cof-ids-bin": "initial-cof-sequence" },
@@ -251,7 +252,7 @@ describe("SnapchatClient", () => {
       },
     }));
     vi.doMock("../src/transport/sso-auth-refresh.js", () => ({
-      refreshSnapchatSso: vi.fn(async () => {
+      refreshSnapchatSession: vi.fn(async () => {
         events.push("auth.refresh");
         return refreshedSession;
       }),

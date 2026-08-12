@@ -31,24 +31,32 @@ the fields below without changing their values.
 Header names are preserved exactly. In particular, keep the observed
 `mcs-cof-ids-bin` value when present.
 
-For supported token refresh, `auth.ssoCookieHeader` contains the Cookie header
-from the most recent `https://accounts.snapchat.com/accounts/sso` request and
-`auth.ssoScuid` contains that request's `scuid` header. These values are
-accounts-domain credentials and are distinct from the Web origin cookie and
-the session `accountId`. The refresh response `scuid` must match `accountId`.
-Use `snap session refresh-har <fresh.har>` to extract, refresh, rotate, and
-persist these values as one operation; a failed refresh leaves the existing
-session file untouched.
+For login-epoch validation, `auth.ssoCookieHeader` contains the most recent
+accounts-domain Cookie state: the Cookie header from the selected
+`https://accounts.snapchat.com/accounts/sso` request merged with that response's
+`Set-Cookie` values. `auth.ssoScuid` records the successful initial request's
+`scuid` for diagnostics; established-session periodic refresh does not resend
+it. The successful response's separate `scuid` must match the session account
+ID. These values are accounts-domain credentials and are
+distinct from the Web origin cookie and the session `accountId`.
+`auth.ssoUsesDbsc` records whether that captured SSO request sent observed DBSC
+cookies. `auth.ssoRequestHeaders` stores a restricted, non-secret allowlist for
+token renewal.
+`auth.webSessionRequestHeaders` stores the restricted browser headers observed
+on a successful `POST /web-chat-session/refresh` request.
+`auth.tokenRefreshedAt` and `auth.webSessionRefreshedAt` independently record
+the two renewal clocks.
 
-The CLI also runs the build's official Web Attestation WASM in a dedicated Node
-worker before an automatic refresh. On Windows it can additionally read the
-configured Brave `Default\Network\Device Bound Sessions` store and use the
-OS-wrapped DBSC key through Windows CNG. The private key is never exported.
-Set `SNAP_BRAVE_PROFILE_DIR` only when the profile is not the default Brave
-profile; the selected profile should be closed so its SQLite store is readable.
-The exported SSO Cookie must come from the same current Brave authentication
-epoch. If the service redirects refresh to login, the CLI reports
-`AUTH_CONTEXT_UNAVAILABLE` and leaves the session unchanged.
+Automatic token renewal runs the pinned official Web Attestation WASM and posts
+the proof with `auth.ssoCookieHeader` to `accounts/sso`. A successful response
+replaces both `httpToken` and `gatewayToken`; this matches the official Web auth
+store. Separately, the CLI repeats the hourly Web-session heartbeat with the
+current `httpToken` and `cookieHeader`. A successful empty response preserves
+both tokens, merges any response `Set-Cookie` values into the Web cookie, and
+advances the heartbeat clock. A rejected renewal requires a fresh login HAR.
+
+Use `snap session refresh-har <fresh.har>` to extract and persist these values
+as one atomic operation.
 
 All four fields are credentials. The CLI must never print their values.
 

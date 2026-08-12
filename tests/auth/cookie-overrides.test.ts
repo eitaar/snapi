@@ -39,4 +39,22 @@ describe("applyCookieOverrides", () => {
     const original = session();
     expect(applyCookieOverrides(original, {})).toEqual(original);
   });
+
+  it("does not replace cookies managed by a successful HAR import", () => {
+    const original: SessionExport = {
+      ...session(),
+      auth: {
+        ...session().auth,
+        ssoRequestHeaders: { origin: "https://www.snapchat.com" },
+      },
+    };
+
+    const updated = applyCookieOverrides(original, {
+      cookieHeader: "web=stale-env",
+      ssoCookieHeader: "sso=stale-env",
+    });
+
+    expect(updated.auth.cookieHeader).toBe("web=old");
+    expect(updated.auth.ssoCookieHeader).toBe("sso=old");
+  });
 });

@@ -1,7 +1,7 @@
 # Content Runtime Feasibility Report
 
 - Build ID: `8dd50222`
-- Started at: `2026-08-12T02:38:12.020Z`
+- Started at: `2026-08-12T10:14:19.046Z`
 
 ## Verified assets
 
@@ -16,42 +16,10 @@
 
 | Check | Status | Duration ms | Error code | Safe error |
 |---|---|---:|---|---|
-| assets_verified | passed | 101 |  |  |
-| worker_started | passed | 4 |  |  |
-| globals_installed | failed | 510 | AUTH_CONTEXT_UNAVAILABLE | SSO refresh requires a browser-managed authentication context |
-
-## CLI-only auth renewal diagnostic gate
-
-The separate diagnostic command:
-
-```powershell
-$env:SNAP_LIVE_TESTS='1'
-node dist/cli/index.js debug auth-renewal --cli-only
-```
-
-is opt-in and read-only. It permits at most one CLI-only renewal attempt plus
-one read-only verification request, does not persist refreshed session state,
-and emits only sanitized result/status/capability metadata.
-
-The read-only verification fixture is accepted only from the configured
-session directory as `edge-delta-probe.json`, with exact non-secret bindings
-for the configured account, build, and session `exportedAt` epoch. Missing,
-legacy-unbound, stale, or mismatched fixtures fail before network traffic.
-
-Interpret the result values as follows:
-
-- `renewed`: this diagnostic execution completed one local refresh and the one
-  read-only verification request succeeded. It does not claim that future
-  requests, other operations, or a different authentication epoch will also
-  succeed.
-- `browser-context-required`: the renewal or verification path hit a
-  browser-bound outcome, including the expected `303`/`403` class of responses.
-  For this build/context, the CLI-only path should remain fail-closed.
-- `profile-unavailable`: local Brave/DBSC profile state required for the
-  CLI-only path was not available to the host process.
-- `rejected`: the CLI-only renewal path ran, but the single verification
-  request still failed. This is not evidence that retries, extra probes, or
-  credential replay should be added.
-
-Like the auth-gap probe, this diagnostic gate must not print or persist raw
-Cookie, Bearer, token, proof, or request/response body material.
+| assets_verified | passed | 448 |  |  |
+| worker_started | passed | 6 |  |  |
+| globals_installed | passed | 4941 |  |  |
+| storage_imported | passed | 0 |  |  |
+| wasm_instantiated | passed | 0 |  |  |
+| modules_resolved | passed | 0 |  |  |
+| content_envelope_created | failed | 2 | SESSION_REEXPORT_REQUIRED | Session export is missing login-time messaging key initialization state |

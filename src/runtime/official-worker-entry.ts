@@ -108,6 +108,7 @@ const nativeFetch = fetch;
 const networkBoundary = createOfficialNetworkBoundary(data.allowNetwork, nativeFetch, {
   webCookieHeader: () => webCookieHeader,
   ssoCookieHeader: () => ssoCookieHeader,
+  httpToken: () => officialHttpToken,
 });
 Object.defineProperty(target, "fetch", {
   value: async (input: string | URL | Request, init?: RequestInit): Promise<Response> => {

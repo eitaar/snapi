@@ -2,6 +2,7 @@ import { randomUUID } from "node:crypto";
 import { mkdir, writeFile } from "node:fs/promises";
 import { dirname, resolve } from "node:path";
 import { AssetLoader } from "../../compat/asset-loader.js";
+import { finalizeWebAttestation } from "../../auth/web-attestation.js";
 import { CompatibilityGuard, SUPPORTED_ASSETS } from "../../compat/guard.js";
 import { loadConfig, loadEnvironmentFile, type AppConfig } from "../../config.js";
 import { AppError } from "../../errors.js";
@@ -19,7 +20,7 @@ import {
   type FeasibilityReport,
 } from "../../runtime/feasibility.js";
 import { ContentRuntimeClient } from "../../runtime/worker-client.js";
-import { refreshSnapchatSso } from "../../transport/sso-auth-refresh.js";
+import { refreshSnapchatSession } from "../../transport/sso-auth-refresh.js";
 import {
   runCliAuthRenewalProbe,
   type CliAuthRenewalReport,
@@ -179,7 +180,9 @@ async function prepareRuntimeDoctor(): Promise<PreparedRuntimeDoctor> {
   const sessionStore = new AtomicJsonStore(config.sessionFile, parseSessionExport);
   const liveDependencies: LiveCheckDependencies = {
     refreshSession: async (current) => {
-      const refreshed = await refreshSnapchatSso(current);
+      const refreshed = await refreshSnapchatSession(current, {
+        attestation: (value) => finalizeWebAttestation(value.accountId, { assetDir: config.assetDir }),
+      });
       await sessionStore.write(refreshed);
       return refreshed;
     },

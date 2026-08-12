@@ -9,6 +9,7 @@ export function applyCookieOverrides(
   session: SessionExport,
   overrides: CookieOverrides,
 ): SessionExport {
+  if (session.auth.ssoRequestHeaders !== undefined) return session;
   if (overrides.cookieHeader === undefined && overrides.ssoCookieHeader === undefined) return session;
   return {
     ...session,

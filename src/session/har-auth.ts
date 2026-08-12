@@ -10,6 +10,25 @@ const ALLOWED_REQUEST_HEADERS = [
   "x-snap-client-user-agent",
   "x-user-agent",
 ] as const;
+const ALLOWED_SSO_REQUEST_HEADERS = [
+  "accept-language",
+  "dnt",
+  "origin",
+  "referer",
+  "sec-ch-ua",
+  "sec-ch-ua-mobile",
+  "sec-ch-ua-platform",
+  "sec-fetch-dest",
+  "sec-fetch-mode",
+  "sec-fetch-site",
+  "sec-gpc",
+  "user-agent",
+] as const;
+const ALLOWED_WEB_SESSION_REQUEST_HEADERS = [
+  ...ALLOWED_SSO_REQUEST_HEADERS,
+  "x-snap-client-user-agent",
+] as const;
+const DBSC_COOKIE_NAMES = new Set(["sc-a-dbsc-session", "sc-a-dbsc-rc"]);
 
 function record(value: unknown): Record<string, unknown> | undefined {
   return value !== null && typeof value === "object" && !Array.isArray(value)
@@ -30,6 +49,57 @@ function header(headers: unknown, name: string): string | undefined {
     ) return item.value;
   }
   return undefined;
+}
+
+function cookieEntries(cookieHeader: string): Map<string, string> {
+  const entries = new Map<string, string>();
+  for (const part of cookieHeader.split(";")) {
+    const trimmed = part.trim();
+    const separator = trimmed.indexOf("=");
+    if (separator <= 0) continue;
+    entries.set(trimmed.slice(0, separator), trimmed.slice(separator + 1));
+  }
+  return entries;
+}
+
+function responseSetCookies(response: Record<string, unknown> | undefined): readonly string[] {
+  const values: string[] = [];
+  if (Array.isArray(response?.headers)) {
+    for (const candidate of response.headers) {
+      const item = record(candidate);
+      if (
+        typeof item?.name === "string" &&
+        item.name.toLowerCase() === "set-cookie" &&
+        typeof item.value === "string"
+      ) values.push(item.value);
+    }
+  }
+  if (Array.isArray(response?.cookies)) {
+    for (const candidate of response.cookies) {
+      const item = record(candidate);
+      if (typeof item?.name === "string" && typeof item.value === "string") {
+        values.push(`${item.name}=${item.value}`);
+      }
+    }
+  }
+  return values;
+}
+
+function mergeSetCookies(
+  cookieHeader: string,
+  response: Record<string, unknown> | undefined,
+): string {
+  const entries = cookieEntries(cookieHeader);
+  for (const setCookie of responseSetCookies(response)) {
+    const pair = setCookie.split(";", 1)[0]?.trim() ?? "";
+    const separator = pair.indexOf("=");
+    if (separator <= 0) continue;
+    const name = pair.slice(0, separator);
+    const value = pair.slice(separator + 1);
+    if (value === "") entries.delete(name);
+    else entries.set(name, value);
+  }
+  return [...entries].map(([name, value]) => `${name}=${value}`).join("; ");
 }
 
 interface HarEntry {
@@ -77,6 +147,26 @@ function bearerToken(value: string | undefined): string | undefined {
   return match?.[1];
 }
 
+function allowedHeaders(headers: unknown, names: readonly string[]): Readonly<Record<string, string>> {
+  const result: Record<string, string> = {};
+  for (const name of names) {
+    const value = header(headers, name);
+    if (value !== undefined) result[name] = value;
+  }
+  return result;
+}
+
+function usesDbscCookie(cookieHeader: string): boolean {
+  return cookieHeader.split(";").some((part) => {
+    const name = part.trim().split("=", 1)[0];
+    return name !== undefined && DBSC_COOKIE_NAMES.has(name);
+  });
+}
+
+function usesAttestation(headers: unknown): boolean {
+  return header(headers, "snap-att") !== undefined;
+}
+
 function gatewayToken(value: string | undefined): string | undefined {
   const parts = (value ?? "").split(",").map((part) => part.trim()).filter(Boolean);
   if (!parts.includes("snap-ws-auth")) return undefined;
@@ -100,14 +190,16 @@ export function enrichSessionWithHarAuth(
     throw new AppError("INVALID_SESSION_EXPORT", "HAR does not contain an accounts SSO request");
   }
   const cookie = header(ssoEntry.request.headers, "cookie");
-  const ssoScuid = header(ssoEntry.request.headers, "scuid");
+  const requestScuid = header(ssoEntry.request.headers, "scuid");
   const responseAccountId = header(ssoEntry.response?.headers, "scuid");
-  if (cookie === undefined || ssoScuid === undefined || responseAccountId === undefined) {
+  if (cookie === undefined || requestScuid === undefined || responseAccountId === undefined) {
     throw new AppError("INVALID_SESSION_EXPORT", "HAR SSO request is missing required authentication headers");
   }
   if (responseAccountId.toLowerCase() !== session.accountId.toLowerCase()) {
     throw new AppError("INVALID_SESSION_EXPORT", "HAR SSO account does not match the session export");
   }
+  const ssoCookieHeader = mergeSetCookies(cookie, ssoEntry.response);
+  const ssoRequestHeaders = allowedHeaders(ssoEntry.request.headers, ALLOWED_SSO_REQUEST_HEADERS);
 
   const messagingEntry = latest(entries.filter((entry) => {
     const url = urlOf(entry);
@@ -124,6 +216,21 @@ export function enrichSessionWithHarAuth(
     );
   }
   const httpToken = bearerToken(header(messagingEntry.request.headers, "authorization"))!;
+
+  const webSessionEntry = latest(entries.filter((entry) => {
+    const url = urlOf(entry);
+    return entry.request.method === "POST" &&
+      entry.response?.status === 200 &&
+      url?.origin === "https://web.snapchat.com" &&
+      url.pathname === "/web-chat-session/refresh" &&
+      bearerToken(header(entry.request.headers, "authorization")) === httpToken;
+  }));
+  const webSessionRequestHeaders = webSessionEntry === undefined
+    ? undefined
+    : allowedHeaders(
+        webSessionEntry.request.headers,
+        ALLOWED_WEB_SESSION_REQUEST_HEADERS,
+      );
 
   const gatewayEntry = latest(entries.filter((entry) => {
     const url = urlOf(entry);
@@ -158,7 +265,13 @@ export function enrichSessionWithHarAuth(
   const webCookie = webCookieEntry === undefined
     ? session.auth.cookieHeader
     : header(webCookieEntry.request.headers, "cookie")!;
-  const capturedAt = messagingEntry.startedDateTime;
+  const tokenCapturedAt = messagingEntry.startedDateTime;
+  if (tokenCapturedAt === undefined || Number.isNaN(Date.parse(tokenCapturedAt))) {
+    throw new AppError("INVALID_SESSION_EXPORT", "HAR Messaging request has no valid capture timestamp");
+  }
+  const capturedAt = latest(
+    webSessionEntry === undefined ? [messagingEntry] : [messagingEntry, webSessionEntry],
+  )?.startedDateTime;
   if (capturedAt === undefined || Number.isNaN(Date.parse(capturedAt))) {
     throw new AppError("INVALID_SESSION_EXPORT", "HAR Messaging request has no valid capture timestamp");
   }
@@ -169,9 +282,19 @@ export function enrichSessionWithHarAuth(
       ...session.auth,
       httpToken,
       gatewayToken: observedGatewayToken,
+      tokenRefreshedAt: new Date(tokenCapturedAt).toISOString(),
+      ...(webSessionEntry?.startedDateTime === undefined
+        ? {}
+        : { webSessionRefreshedAt: new Date(webSessionEntry.startedDateTime).toISOString() }),
       cookieHeader: webCookie,
-      ssoCookieHeader: cookie,
-      ssoScuid,
+      ssoCookieHeader,
+      ssoScuid: requestScuid,
+      ssoUsesDbsc: usesDbscCookie(ssoCookieHeader),
+      ssoUsesAttestation: usesAttestation(ssoEntry.request.headers),
+      ...(Object.keys(ssoRequestHeaders).length === 0 ? {} : { ssoRequestHeaders }),
+      ...(webSessionRequestHeaders === undefined || Object.keys(webSessionRequestHeaders).length === 0
+        ? {}
+        : { webSessionRequestHeaders }),
       requestHeaders,
     },
   };

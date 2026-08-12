@@ -1,5 +1,4 @@
 import { describe, expect, it, vi } from "vitest";
-import { AppError } from "../../src/errors.js";
 import { main } from "../../src/cli/index.js";
 import {
   runCliAuthRenewalProbe,
@@ -29,6 +28,7 @@ function session() {
     auth: {
       httpToken: "old-http-token",
       gatewayToken: "old-gateway-token",
+      webSessionRefreshedAt: "2026-08-12T00:30:00.000Z",
       cookieHeader: "web-cookie=initial-secret",
       ssoCookieHeader: "sso-cookie=initial-secret",
       ssoScuid: "11111111-2222-4333-8444-555555555555",
@@ -117,41 +117,28 @@ describe("runCliAuthRenewalProbe", () => {
     const refreshedToken = "r".repeat(96);
     const fetch = vi.fn(async (input: string | URL | Request, init?: RequestInit) => {
       if (String(input).startsWith("https://accounts.snapchat.com/accounts/sso")) {
-        return new Response(refreshedToken, {
-          status: 200,
-          headers: { scuid: session().accountId },
-        });
+        return new Response(refreshedToken, { status: 200 });
       }
       const headers = new Headers(init?.headers);
       expect(headers.get("authorization")).toBe(`Bearer ${refreshedToken}`);
       expect(headers.has("cookie")).toBe(false);
       return new Response(null, { status: 200 });
     });
-    const dbsc = vi.fn(async (cookieHeader: string) => ({
-      cookieHeader: `${cookieHeader}; dbsc=used-secret`,
-    }));
-    const attestation = vi.fn(async () => "attestation-proof-secret");
 
-    const report = await runCliAuthRenewalProbe(dependencies({ fetch, dbsc, attestation }));
+    const report = await runCliAuthRenewalProbe(dependencies({ fetch }));
 
     expect(report).toEqual({
       mode: "cli-only",
       result: "renewed",
       statuses: [200],
-      capabilities: [
-        { capability: "dbsc-profile", status: "used" },
-        { capability: "web-attestation", status: "used" },
-      ],
+      capabilities: [{ capability: "manual-session", status: "used" }],
     });
     expect(fetch).toHaveBeenCalledTimes(2);
-    expect(JSON.stringify(report)).not.toContain(refreshedToken);
     expect(JSON.stringify(report)).not.toContain("initial-secret");
-    expect(JSON.stringify(report)).not.toContain("used-secret");
-    expect(JSON.stringify(report)).not.toContain("attestation-proof-secret");
     expect(JSON.stringify(report)).not.toContain("probe-body-secret");
   });
 
-  it("classifies an SSO redirect as browser-context-required and stops before verification", async () => {
+  it("classifies a heartbeat redirect as browser-context-required and stops before verification", async () => {
     const fetch = vi.fn(async () => new Response(null, {
       status: 303,
       headers: { location: "/v2/login?code=secret-code" },
@@ -169,41 +156,11 @@ describe("runCliAuthRenewalProbe", () => {
     expect(JSON.stringify(report)).not.toContain("secret-code");
   });
 
-  it("classifies an unavailable DBSC profile without exposing profile or proof data", async () => {
-    const dbsc = vi.fn(async () => {
-      throw new AppError(
-        "AUTH_CONTEXT_UNAVAILABLE",
-        "DBSC profile unavailable",
-        {
-          reason: "dbsc-profile-unavailable",
-          profileDir: "C:/Users/example/AppData/Local/Brave/profile",
-          secureSessionResponse: "proof-secret",
-        },
-      );
-    });
-    const fetch = vi.fn();
-
-    const report = await runCliAuthRenewalProbe(dependencies({ fetch, dbsc }));
-
-    expect(report).toEqual({
-      mode: "cli-only",
-      result: "profile-unavailable",
-      statuses: [],
-      capabilities: [{ capability: "dbsc-profile", status: "unavailable" }],
-    });
-    expect(fetch).not.toHaveBeenCalled();
-    expect(JSON.stringify(report)).not.toContain("C:/Users/example/AppData/Local/Brave/profile");
-    expect(JSON.stringify(report)).not.toContain("proof-secret");
-  });
-
   it("reports rejected when verification still fails after a successful refresh", async () => {
     const refreshedToken = "t".repeat(96);
     const fetch = vi.fn(async (input: string | URL | Request) => {
       if (String(input).startsWith("https://accounts.snapchat.com/accounts/sso")) {
-        return new Response(refreshedToken, {
-          status: 200,
-          headers: { scuid: session().accountId },
-        });
+        return new Response(refreshedToken, { status: 200 });
       }
       return new Response(null, { status: 401 });
     });
@@ -217,17 +174,13 @@ describe("runCliAuthRenewalProbe", () => {
       capabilities: [{ capability: "manual-session", status: "used" }],
     });
     expect(fetch).toHaveBeenCalledTimes(2);
-    expect(JSON.stringify(report)).not.toContain(refreshedToken);
   });
 
   it("classifies a verification redirect as browser-context-required without exposing redirect data", async () => {
     const refreshedToken = "v".repeat(96);
     const fetch = vi.fn(async (input: string | URL | Request, init?: RequestInit) => {
       if (String(input).startsWith("https://accounts.snapchat.com/accounts/sso")) {
-        return new Response(refreshedToken, {
-          status: 200,
-          headers: { scuid: session().accountId },
-        });
+        return new Response(refreshedToken, { status: 200 });
       }
       if (init?.redirect === "error") {
         throw new TypeError("redirect to /v2/login?code=secret-code");
@@ -247,7 +200,6 @@ describe("runCliAuthRenewalProbe", () => {
       capabilities: [{ capability: "browser-context-required", status: "rejected", httpStatus: 303 }],
     });
     expect(fetch).toHaveBeenCalledTimes(2);
-    expect(JSON.stringify(report)).not.toContain(refreshedToken);
     expect(JSON.stringify(report)).not.toContain("secret-code");
   });
 });

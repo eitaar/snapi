@@ -1,10 +1,8 @@
 import { readFile } from "node:fs/promises";
 import { dirname, join } from "node:path";
 import { applyCookieOverrides } from "../auth/cookie-overrides.js";
-import { classifyRenewalFailure, type RenewalObservation } from "../auth/renewal.js";
-import { readBraveCookieHeader } from "../auth/brave-cookies.js";
-import { refreshBraveDbsc, resolveOptionalBraveProfileDir } from "../auth/dbsc.js";
 import { finalizeWebAttestation } from "../auth/web-attestation.js";
+import { classifyRenewalFailure, type RenewalObservation } from "../auth/renewal.js";
 import { loadConfig, loadEnvironmentFile, type AppConfig } from "../config.js";
 import { AppError } from "../errors.js";
 import { parseJsonWithBytes } from "../session/binary-json.js";
@@ -14,7 +12,7 @@ import {
   runReadOnlyAuthProbe,
   type ReadOnlyAuthProbeInput,
 } from "./read-only-auth-probe.js";
-import { refreshSnapchatSso } from "../transport/sso-auth-refresh.js";
+import { refreshSnapchatSession } from "../transport/sso-auth-refresh.js";
 
 const PROBE_FILENAME = "edge-delta-probe.json";
 
@@ -40,10 +38,8 @@ export interface CliAuthRenewalDependencies {
   readonly session?: SessionExport;
   readonly fetch?: typeof globalThis.fetch;
   readonly now?: () => Date;
-  readonly readProbeFixture?: (path: string) => Promise<unknown>;
-  readonly cookieSource?: () => Promise<string>;
-  readonly dbsc?: (cookieHeader: string) => Promise<{ readonly cookieHeader: string }>;
   readonly attestation?: (session: SessionExport) => Promise<string>;
+  readonly readProbeFixture?: (path: string) => Promise<unknown>;
 }
 
 function invalid(message: string): AppError {
@@ -156,19 +152,6 @@ function safeObservations(error: AppError): readonly RenewalObservation[] {
   return safe.length > 0 ? safe : [{ capability: "manual-session", status: "rejected" }];
 }
 
-function trackedCapabilities(state: {
-  usedLegacyCookie: boolean;
-  usedDbsc: boolean;
-  usedAttestation: boolean;
-}): readonly RenewalObservation[] {
-  const capabilities: RenewalObservation[] = [];
-  if (state.usedLegacyCookie) capabilities.push({ capability: "legacy-brave-cookie", status: "used" });
-  if (state.usedDbsc) capabilities.push({ capability: "dbsc-profile", status: "used" });
-  if (state.usedAttestation) capabilities.push({ capability: "web-attestation", status: "used" });
-  if (capabilities.length === 0) capabilities.push({ capability: "manual-session", status: "used" });
-  return capabilities;
-}
-
 function reportFromFailure(error: unknown): CliAuthRenewalReport {
   const classified = classifyRenewalFailure(error);
   const capabilities = safeObservations(classified);
@@ -219,69 +202,16 @@ export async function runCliAuthRenewalProbe(
   )(probePath));
   assertProbeBinding(config, loadedSession, fixture);
   const request = fixture.request;
-  const allowLiveLocalDependencies = dependencies.config === undefined
-    && dependencies.session === undefined
-    && dependencies.readProbeFixture === undefined;
-
-  const profileDir = resolveOptionalBraveProfileDir(env);
-  const usage = {
-    usedLegacyCookie: false,
-    usedDbsc: false,
-    usedAttestation: false,
-  };
-
-  const cookieSource = dependencies.cookieSource ??
-    (allowLiveLocalDependencies && session.auth.ssoCookieHeader === undefined && profileDir !== undefined
-      ? async () => {
-          usage.usedLegacyCookie = true;
-          return readBraveCookieHeader(profileDir);
-        }
-      : undefined);
-  const dbsc = dependencies.dbsc ??
-    (!allowLiveLocalDependencies || profileDir === undefined
-      ? undefined
-      : async (cookieHeader: string) => {
-          usage.usedDbsc = true;
-          return refreshBraveDbsc(cookieHeader, {
-            profileDir,
-            ...(dependencies.fetch === undefined ? {} : { fetch: dependencies.fetch }),
-          });
-        });
-  const attestation = dependencies.attestation ??
-    (allowLiveLocalDependencies
-      ? async (value: SessionExport) => {
-          usage.usedAttestation = true;
-          return finalizeWebAttestation(value.accountId, { assetDir: config.assetDir });
-        }
-      : undefined);
-
-  const trackedCookieSource = cookieSource === undefined
-    ? undefined
-    : async () => {
-        usage.usedLegacyCookie = true;
-        return cookieSource();
-      };
-  const trackedDbsc = dbsc === undefined
-    ? undefined
-    : async (cookieHeader: string) => {
-        usage.usedDbsc = true;
-        return dbsc(cookieHeader);
-      };
-  const trackedAttestation = attestation === undefined
-    ? undefined
-    : async (value: SessionExport) => {
-        usage.usedAttestation = true;
-        return attestation(value);
-      };
-
   let refreshed: SessionExport;
   try {
-    refreshed = await refreshSnapchatSso(session, {
+    const attestation = dependencies.attestation
+      ?? (dependencies.config === undefined && dependencies.session === undefined
+        ? (value: SessionExport) => finalizeWebAttestation(value.accountId, { assetDir: config.assetDir })
+        : undefined);
+    refreshed = await refreshSnapchatSession(session, {
       ...(dependencies.fetch === undefined ? {} : { fetch: dependencies.fetch }),
       ...(dependencies.now === undefined ? {} : { now: dependencies.now }),
-      ...(trackedCookieSource === undefined ? {} : { cookieSource: trackedCookieSource }),
-      ...(trackedDbsc === undefined ? {} : { dbsc: trackedDbsc }),
-      ...(trackedAttestation === undefined ? {} : { attestation: trackedAttestation }),
+      ...(attestation === undefined ? {} : { attestation }),
     });
   } catch (error) {
     return reportFromFailure(error);
@@ -305,7 +235,7 @@ export async function runCliAuthRenewalProbe(
       mode: "cli-only",
       result: "renewed",
       statuses: [verification.status],
-      capabilities: trackedCapabilities(usage),
+      capabilities: [{ capability: "manual-session", status: "used" }],
     };
   }
   if (verification.status === 303 || verification.status === 403) {
@@ -320,6 +250,6 @@ export async function runCliAuthRenewalProbe(
     mode: "cli-only",
     result: "rejected",
     statuses: numberList(verification.status),
-    capabilities: trackedCapabilities(usage),
+    capabilities: [{ capability: "manual-session", status: "used" }],
   };
 }

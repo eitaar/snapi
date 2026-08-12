@@ -16,3 +16,7 @@ Task 4: fix round 1/5 (2 addressed, 1 report-scope observation pending; commit p
 Task 4: fix round 1/5 (3 addressed, 0 open; commits ac3bb41..69ab3de)
 Task 4: minor (deferred): full typecheck is currently blocked by unrelated dirty Snap event/config changes; focused Task 4 tests and Task 4 source type paths pass.
 Task 4: complete (commits ac3bb41..69ab3de, review clean; 1 minor deferred)
+Task 5: fix round 1/5 (2 addressed, 0 open; commit 7a86552; scoped re-review accepted)
+Task 5: complete (commits 54278b1..7a86552, review clean)
+Task 6: final review fix wave (7 Important findings addressed; commit 21b0e6c)
+Task 6: complete (full suite/typecheck/build/diff check passed; scoped re-review PASS; live gate browser-context-required 303; no remaining blockers)

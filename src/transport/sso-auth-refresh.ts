@@ -2,14 +2,15 @@ import { AppError } from "../errors.js";
 import type { SessionExport } from "../session/types.js";
 
 const SSO_URL = "https://accounts.snapchat.com/accounts/sso?client_id=web-calling-corp--prod";
+const SESSION_REFRESH_URL =
+  "https://web.snapchat.com/web-chat-session/refresh?client_id=web-calling-corp--prod";
 const TOKEN_PATTERN = /^[A-Za-z0-9._~-]{64,8192}$/;
+const WEB_SESSION_MAX_AGE_MS = 3_600_000;
 
 export interface SsoRefreshDependencies {
   readonly fetch?: typeof globalThis.fetch;
   readonly now?: () => Date;
-  readonly cookieSource?: () => Promise<string>;
   readonly attestation?: (session: SessionExport) => Promise<string>;
-  readonly dbsc?: (cookieHeader: string) => Promise<{ readonly cookieHeader: string }>;
 }
 
 function cookieEntries(cookieHeader: string): Map<string, string> {
@@ -44,11 +45,14 @@ function responseSetCookies(headers: Headers): readonly string[] {
   return combined === null ? [] : [combined];
 }
 
-function redirectMetadata(response: Response): Readonly<Record<string, unknown>> {
+function redirectMetadata(
+  response: Response,
+  baseUrl: string,
+): Readonly<Record<string, unknown>> {
   const location = response.headers.get("location");
   if (location === null) return { hasLocation: false };
   try {
-    const url = new URL(location, SSO_URL);
+    const url = new URL(location, baseUrl);
     return {
       hasLocation: true,
       locationOrigin: url.origin,
@@ -62,44 +66,101 @@ function redirectMetadata(response: Response): Readonly<Record<string, unknown>>
   }
 }
 
+export async function refreshSnapchatWebSession(
+  session: SessionExport,
+  dependencies: SsoRefreshDependencies = {},
+): Promise<SessionExport> {
+  const fetch = dependencies.fetch ?? globalThis.fetch;
+  const capturedHeaders = session.auth.webSessionRequestHeaders
+    ?? session.auth.ssoRequestHeaders;
+  const headers: Record<string, string> = {
+    ...(capturedHeaders ?? {}),
+    accept: "*/*",
+    authorization: `Bearer ${session.auth.httpToken}`,
+    "cache-control": "no-cache",
+    cookie: session.auth.cookieHeader,
+    origin: capturedHeaders?.origin ?? "https://www.snapchat.com",
+    pragma: "no-cache",
+    referer: capturedHeaders?.referer ?? "https://www.snapchat.com/",
+  };
+  const clientUserAgent = capturedHeaders?.["x-snap-client-user-agent"]
+    ?? session.auth.requestHeaders["x-snap-client-user-agent"];
+  if (clientUserAgent !== undefined) headers["x-snap-client-user-agent"] = clientUserAgent;
+  let response: Response;
+  try {
+    response = await fetch(SESSION_REFRESH_URL, {
+      method: "POST",
+      body: null,
+      redirect: "manual",
+      headers,
+    });
+  } catch (error) {
+    throw new AppError("SESSION_REEXPORT_REQUIRED", "Unable to refresh the exported Web session", {
+      errorName: error instanceof Error ? error.name : "UnknownError",
+    });
+  }
+
+  if (
+    response.type === "opaqueredirect"
+    || (response.status >= 300 && response.status < 400)
+    || response.status === 403
+  ) {
+    throw new AppError(
+      "SESSION_REEXPORT_REQUIRED",
+      "Exported Snapchat authentication no longer accepts a Web session heartbeat",
+      {
+        status: response.status,
+        ...redirectMetadata(response, SESSION_REFRESH_URL),
+      },
+    );
+  }
+
+  if (!response.ok) {
+    throw new AppError("SESSION_REEXPORT_REQUIRED", "Exported Snapchat authentication can no longer refresh the Web session", {
+      status: response.status,
+    });
+  }
+
+  const refreshedAt = (dependencies.now ?? (() => new Date()))().toISOString();
+  return {
+    ...session,
+    exportedAt: refreshedAt,
+    auth: {
+      ...session.auth,
+      cookieHeader: mergeSetCookies(
+        session.auth.cookieHeader,
+        responseSetCookies(response.headers),
+      ),
+      webSessionRefreshedAt: refreshedAt,
+    },
+  };
+}
+
 export async function refreshSnapchatSso(
   session: SessionExport,
   dependencies: SsoRefreshDependencies = {},
 ): Promise<SessionExport> {
   const fetch = dependencies.fetch ?? globalThis.fetch;
-  let ssoCookieHeader = session.auth.ssoCookieHeader;
-  const ssoScuid = session.auth.ssoScuid;
-  if (ssoScuid === undefined) {
-    throw new AppError(
-      "SESSION_REEXPORT_REQUIRED",
-      "Session export is missing the accounts-domain SSO client identifier",
-    );
-  }
-  if (ssoCookieHeader === undefined && dependencies.cookieSource !== undefined) {
-    ssoCookieHeader = await dependencies.cookieSource();
-  }
+  const ssoCookieHeader = session.auth.ssoCookieHeader;
   if (ssoCookieHeader === undefined) {
     throw new AppError(
       "SESSION_REEXPORT_REQUIRED",
       "Session export is missing the accounts-domain SSO cookie",
     );
   }
-  if (dependencies.dbsc !== undefined) {
-    ssoCookieHeader = (await dependencies.dbsc(ssoCookieHeader)).cookieHeader;
-  }
-  const attestation = dependencies.attestation === undefined
-    ? undefined
-    : await dependencies.attestation(session);
+  const capturedHeaders = session.auth.ssoRequestHeaders;
+  const attestation = await dependencies.attestation?.(session);
   const headers: Record<string, string> = {
+    ...(capturedHeaders ?? {}),
     accept: "*/*",
     "cache-control": "no-cache",
     cookie: ssoCookieHeader,
-    origin: "https://web.snapchat.com",
+    origin: capturedHeaders?.origin ?? "https://www.snapchat.com",
     pragma: "no-cache",
-    referer: "https://web.snapchat.com/",
-    scuid: ssoScuid,
+    referer: capturedHeaders?.referer ?? "https://www.snapchat.com/",
   };
   if (attestation !== undefined) headers["snap-att"] = attestation;
+
   let response: Response;
   try {
     response = await fetch(SSO_URL, {
@@ -109,7 +170,7 @@ export async function refreshSnapchatSso(
       headers,
     });
   } catch (error) {
-    throw new AppError("SESSION_REEXPORT_REQUIRED", "Unable to refresh the exported Snapchat session", {
+    throw new AppError("SESSION_REEXPORT_REQUIRED", "Unable to refresh the exported Snapchat token", {
       errorName: error instanceof Error ? error.name : "UnknownError",
     });
   }
@@ -121,17 +182,16 @@ export async function refreshSnapchatSso(
   ) {
     throw new AppError(
       "AUTH_CONTEXT_UNAVAILABLE",
-      "SSO refresh requires a browser-managed authentication context",
+      "SSO token refresh requires a valid exported authentication context",
       {
         status: response.status,
         hasAttestation: attestation !== undefined,
-        ...redirectMetadata(response),
+        ...redirectMetadata(response, SSO_URL),
       },
     );
   }
-
   if (!response.ok) {
-    throw new AppError("SESSION_REEXPORT_REQUIRED", "Exported Snapchat cookies can no longer refresh authentication", {
+    throw new AppError("SESSION_REEXPORT_REQUIRED", "Exported Snapchat authentication can no longer refresh the token", {
       status: response.status,
     });
   }
@@ -140,26 +200,35 @@ export async function refreshSnapchatSso(
   if (!TOKEN_PATTERN.test(token)) {
     throw new AppError("SESSION_REEXPORT_REQUIRED", "SSO refresh returned an invalid token");
   }
-
   const responseAccountId = response.headers.get("scuid")?.toLowerCase();
-  if (responseAccountId !== session.accountId.toLowerCase()) {
-    throw new AppError(
-      "INVALID_SESSION_EXPORT",
-      "SSO refresh account does not match the session export",
-    );
+  if (responseAccountId !== undefined && responseAccountId !== session.accountId.toLowerCase()) {
+    throw new AppError("INVALID_SESSION_EXPORT", "SSO refresh account does not match the session export");
   }
-
+  const refreshedAt = (dependencies.now ?? (() => new Date()))().toISOString();
   return {
     ...session,
-    exportedAt: (dependencies.now ?? (() => new Date()))().toISOString(),
+    exportedAt: refreshedAt,
     auth: {
       ...session.auth,
       httpToken: token,
       gatewayToken: token,
-      ssoCookieHeader: mergeSetCookies(
-        ssoCookieHeader,
-        responseSetCookies(response.headers),
-      ),
+      tokenRefreshedAt: refreshedAt,
+      ssoCookieHeader: mergeSetCookies(ssoCookieHeader, responseSetCookies(response.headers)),
     },
   };
+}
+
+export async function refreshSnapchatSession(
+  session: SessionExport,
+  dependencies: SsoRefreshDependencies = {},
+): Promise<SessionExport> {
+  const refreshed = await refreshSnapchatSso(session, dependencies);
+  const now = dependencies.now ?? (() => new Date());
+  const heartbeatAt = Date.parse(
+    session.auth.webSessionRefreshedAt ?? session.exportedAt,
+  );
+  if (!Number.isNaN(heartbeatAt) && now().getTime() - heartbeatAt < WEB_SESSION_MAX_AGE_MS) {
+    return refreshed;
+  }
+  return refreshSnapchatWebSession(refreshed, dependencies);
 }

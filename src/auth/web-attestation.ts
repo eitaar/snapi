@@ -43,12 +43,16 @@ async function runWorker(
   options: WebAttestationOptions,
 ): Promise<string> {
   const worker = new Worker(options.workerUrl ?? new URL("./web-attestation-worker-entry.js", import.meta.url), {
+    stdout: true,
+    stderr: true,
     workerData: {
       accountId,
       assetDir: options.assetDir,
       wasmUrl: ATTESTATION_WASM_URL,
     },
   });
+  worker.stdout?.resume();
+  worker.stderr?.resume();
   const timeoutMs = options.timeoutMs ?? DEFAULT_TIMEOUT_MS;
   return new Promise<string>((resolve, reject) => {
     let settled = false;
