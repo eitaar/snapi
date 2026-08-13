@@ -2,10 +2,15 @@ import { createHash } from "node:crypto";
 import { connect } from "node:http2";
 import { AppError } from "../errors.js";
 import { probeGatewayHandshake } from "../gateway/handshake.js";
-import { runReadOnlyAuthProbe, type ReadOnlyAuthProbeInput } from "./read-only-auth-probe.js";
+import type { ReadOnlyAuthProbeInput } from "./read-only-auth-probe.js";
 import type { SafeAuthBindingObservation } from "./auth-binding-types.js";
 
 const HTTP2_ORIGIN = "https://web.snapchat.com";
+const AUTH_BINDING_MESSAGING_PATHS = new Set([
+  "/messagingcoreservice.MessagingCoreService/DeltaSync",
+  "/messagingcoreservice.MessagingCoreService/BatchDeltaSync",
+  "/messagingcoreservice.MessagingCoreService/GetGroups",
+]);
 const SAFE_REQUEST_HEADERS = new Set([
   "accept",
   "caller-source",
@@ -31,6 +36,7 @@ export interface NodeAuthBindingProbeInput {
   readonly authEpoch: string;
   readonly context: NodeAuthBindingMode;
   readonly request?: ReadOnlyAuthProbeInput["request"];
+  readonly tokenEqualsEpochBaseline?: boolean;
   readonly auth: {
     readonly httpToken: string;
     readonly cookieHeader: string;
@@ -78,26 +84,33 @@ function validateCommon(input: NodeAuthBindingProbeInput): void {
 
 function requireMessagingRequest(input: NodeAuthBindingProbeInput): ReadOnlyAuthProbeInput["request"] {
   if (input.request === undefined) throw invalidConfig("Read-only messaging request is required");
+  if (input.auth.httpToken.trim() === "" || input.auth.cookieHeader.trim() === "") {
+    throw invalidSessionExport("HTTP token and web cookie are required");
+  }
   return input.request;
 }
 
-async function validateHttp2Request(
-  input: NodeAuthBindingProbeInput,
+function validateAndDecodeMessagingRequest(
   request: ReadOnlyAuthProbeInput["request"],
-  now: NodeAuthBindingProbeDependencies["now"],
-): Promise<void> {
-  const localValidationFetch: typeof globalThis.fetch = async () => {
-    throw new Error("Local read-only validation completed");
-  };
-  await runReadOnlyAuthProbe({
-    authEpoch: input.authEpoch,
-    mode: "node-web-cookie",
-    request,
-    auth: input.auth,
-  }, {
-    fetch: localValidationFetch,
-    ...(now === undefined ? {} : { now }),
-  });
+): { readonly url: URL; readonly body: Uint8Array } {
+  if (request.method.toUpperCase() !== "POST") throw invalidConfig("Read-only probe only allows POST");
+  let url: URL;
+  try {
+    url = new URL(request.url);
+  } catch {
+    throw invalidConfig("Read-only probe URL is invalid");
+  }
+  if (url.protocol !== "https:" || url.origin !== HTTP2_ORIGIN || url.search !== "" || url.hash !== "") {
+    throw invalidConfig("Read-only probe URL is not allowed");
+  }
+  if (!AUTH_BINDING_MESSAGING_PATHS.has(url.pathname)) {
+    throw invalidConfig("Auth-binding probe path is not allowlisted");
+  }
+  if (
+    request.bodyBase64.length % 4 !== 0 ||
+    !/^(?:[A-Za-z0-9+/]{4})*(?:[A-Za-z0-9+/]{2}==|[A-Za-z0-9+/]{3}=)?$/.test(request.bodyBase64)
+  ) throw invalidConfig("Read-only probe body must be valid Base64");
+  return { url, body: new Uint8Array(Buffer.from(request.bodyBase64, "base64")) };
 }
 
 function safeHttp2Headers(
@@ -136,7 +149,7 @@ function messagingObservation(
     requestBodyBytes: body.byteLength,
     requestBodySha256: createHash("sha256").update(body).digest("hex"),
     safeHeaderNames: [...safeHeaderNames].sort(),
-    tokenEqualsEpochBaseline: true,
+    tokenEqualsEpochBaseline: input.tokenEqualsEpochBaseline === true,
   };
 }
 
@@ -145,29 +158,34 @@ async function runHttp1(
   dependencies: NodeAuthBindingProbeDependencies,
 ): Promise<SafeAuthBindingObservation> {
   const request = requireMessagingRequest(input);
-  const observation = await runReadOnlyAuthProbe({
-    authEpoch: input.authEpoch,
-    mode: "node-web-cookie",
-    request,
-    auth: input.auth,
-  }, {
-    ...(dependencies.fetch === undefined ? {} : { fetch: dependencies.fetch }),
-    ...(dependencies.now === undefined ? {} : { now: dependencies.now }),
-  });
-  return {
-    authEpoch: observation.authEpoch,
-    context: "node-http1",
-    operation: "messaging-read",
-    endpointPath: observation.endpointPath,
-    startedAt: observation.startedAt,
-    ...(observation.status === undefined ? {} : { status: observation.status }),
-    protocol: "http/1.1",
-    requestBodyBytes: observation.requestBodyBytes,
-    requestBodySha256: observation.requestBodySha256,
-    safeHeaderNames: observation.safeHeaderNames,
-    tokenEqualsEpochBaseline: true,
-    ...(observation.transportError === undefined ? {} : { transportError: observation.transportError }),
-  };
+  const { url, body } = validateAndDecodeMessagingRequest(request);
+  const headers = new Headers();
+  for (const [name, value] of Object.entries(request.headers)) {
+    if (SAFE_REQUEST_HEADERS.has(name.toLowerCase())) headers.set(name, value);
+  }
+  headers.set("authorization", `Bearer ${input.auth.httpToken}`);
+  headers.set("cookie", input.auth.cookieHeader);
+  const base = messagingObservation(
+    input,
+    "node-http1",
+    url.pathname,
+    (dependencies.now ?? (() => new Date()))().toISOString(),
+    body,
+    [...headers.keys()],
+  );
+  const requestBody = new ArrayBuffer(body.byteLength);
+  new Uint8Array(requestBody).set(body);
+  try {
+    const response = await (dependencies.fetch ?? globalThis.fetch)(url, {
+      method: "POST",
+      headers,
+      body: requestBody,
+      redirect: "manual",
+    });
+    return { ...base, status: response.status };
+  } catch (error) {
+    return { ...base, transportError: transportErrorKind(error) };
+  }
 }
 
 async function runHttp2(
@@ -175,9 +193,7 @@ async function runHttp2(
   dependencies: NodeAuthBindingProbeDependencies,
 ): Promise<SafeAuthBindingObservation> {
   const request = requireMessagingRequest(input);
-  await validateHttp2Request(input, request, dependencies.now);
-  const url = new URL(request.url);
-  const body = new Uint8Array(Buffer.from(request.bodyBase64, "base64"));
+  const { url, body } = validateAndDecodeMessagingRequest(request);
   const headers = safeHttp2Headers(request, input.auth, url.pathname);
   const base = messagingObservation(
     input,
@@ -250,7 +266,7 @@ async function runGateway(
     startedAt: (dependencies.now ?? (() => new Date()))().toISOString(),
     protocol: "websocket" as const,
     safeHeaderNames: [],
-    tokenEqualsEpochBaseline: true,
+    tokenEqualsEpochBaseline: input.tokenEqualsEpochBaseline === true,
   };
   try {
     const observation = await (dependencies.gatewayProbe ?? probeGatewayHandshake)(input.auth.gatewayToken);

@@ -19,6 +19,48 @@ function io() {
   };
 }
 
+function authBindingBaselineHar(token: string, bodyBase64 = "AQID"): object {
+  return {
+    log: {
+      entries: [
+        {
+          request: { method: "GET", url: "https://web.snapchat.com/web/version.json?version=8dd50222" },
+          response: { status: 200 },
+        },
+        {
+          startedDateTime: "2026-08-13T00:00:00.000Z",
+          request: {
+            method: "GET",
+            url: "wss://aws.duplex.snapchat.com/snapchat.gateway.Gateway/WebSocketConnect",
+            headers: [
+              { name: "sec-websocket-protocol", value: `snap-ws-auth, ${token}` },
+              { name: "origin", value: "https://www.snapchat.com" },
+            ],
+          },
+          response: {
+            status: 101,
+            headers: [{ name: "sec-websocket-protocol", value: "snap-ws-auth" }],
+          },
+        },
+        {
+          startedDateTime: "2026-08-13T00:01:00.000Z",
+          request: {
+            method: "POST",
+            url: "https://web.snapchat.com/messagingcoreservice.MessagingCoreService/DeltaSync",
+            httpVersion: "h3",
+            headers: [
+              { name: "authorization", value: `Bearer ${token}` },
+              { name: "content-type", value: "application/grpc-web+proto" },
+            ],
+            postData: { encoding: "base64", text: bodyBase64 },
+          },
+          response: { status: 200 },
+        },
+      ],
+    },
+  };
+}
+
 function configured(overrides: Partial<ConfiguredCliClient["client"]> = {}): ConfiguredCliClient {
   return {
     output: "json",
@@ -437,7 +479,10 @@ describe("CLI commands", () => {
                 { name: "origin", value: "https://www.snapchat.com" },
               ],
             },
-            response: { status: 101 },
+            response: {
+              status: 101,
+              headers: [{ name: "sec-websocket-protocol", value: "snap-ws-auth" }],
+            },
           },
           {
             startedDateTime: "2026-08-13T00:01:00.000Z",
@@ -594,6 +639,108 @@ describe("CLI commands", () => {
     expect(readFile).toHaveBeenCalledOnce();
   });
 
+  it.each([
+    ["Messaging body bytes are missing", {
+      authEpoch: "epoch-a",
+      context: "node-http2",
+      operation: "messaging-read",
+      endpointPath: "/messagingcoreservice.MessagingCoreService/DeltaSync",
+      startedAt: "2026-08-13T00:00:00.000Z",
+      status: 401,
+      protocol: "h2",
+      requestBodySha256: "a".repeat(64),
+      safeHeaderNames: ["authorization"],
+      tokenEqualsEpochBaseline: false,
+    }],
+    ["Messaging body hash is missing", {
+      authEpoch: "epoch-a",
+      context: "node-http2",
+      operation: "messaging-read",
+      endpointPath: "/messagingcoreservice.MessagingCoreService/DeltaSync",
+      startedAt: "2026-08-13T00:00:00.000Z",
+      status: 401,
+      protocol: "h2",
+      requestBodyBytes: 3,
+      safeHeaderNames: ["authorization"],
+      tokenEqualsEpochBaseline: false,
+    }],
+    ["Gateway context is used for Messaging", {
+      authEpoch: "epoch-a",
+      context: "node-gateway",
+      operation: "messaging-read",
+      endpointPath: "/messagingcoreservice.MessagingCoreService/DeltaSync",
+      startedAt: "2026-08-13T00:00:00.000Z",
+      status: 401,
+      protocol: "h2",
+      requestBodyBytes: 3,
+      requestBodySha256: "a".repeat(64),
+      safeHeaderNames: [],
+      tokenEqualsEpochBaseline: false,
+    }],
+    ["Messaging endpoint is used for Gateway", {
+      authEpoch: "epoch-a",
+      context: "node-gateway",
+      operation: "gateway-handshake",
+      endpointPath: "/messagingcoreservice.MessagingCoreService/DeltaSync",
+      startedAt: "2026-08-13T00:00:00.000Z",
+      status: 401,
+      protocol: "websocket",
+      safeHeaderNames: [],
+      tokenEqualsEpochBaseline: false,
+    }],
+    ["HTTP/3 context reports h2", {
+      authEpoch: "epoch-a",
+      context: "dotnet-http3",
+      operation: "messaging-read",
+      endpointPath: "/messagingcoreservice.MessagingCoreService/DeltaSync",
+      startedAt: "2026-08-13T00:00:00.000Z",
+      status: 401,
+      protocol: "h2",
+      requestBodyBytes: 3,
+      requestBodySha256: "a".repeat(64),
+      safeHeaderNames: ["authorization"],
+      tokenEqualsEpochBaseline: true,
+    }],
+    ["Gateway carries Messaging body identity", {
+      authEpoch: "epoch-a",
+      context: "node-gateway",
+      operation: "gateway-handshake",
+      endpointPath: "/snapchat.gateway.Gateway/WebSocketConnect",
+      startedAt: "2026-08-13T00:00:00.000Z",
+      status: 401,
+      protocol: "websocket",
+      requestBodyBytes: 3,
+      requestBodySha256: "a".repeat(64),
+      safeHeaderNames: [],
+      tokenEqualsEpochBaseline: false,
+    }],
+    ["bootstrap label is unbounded", {
+      authEpoch: "epoch-a",
+      context: "brave-worker-replay",
+      operation: "messaging-read",
+      endpointPath: "/messagingcoreservice.MessagingCoreService/DeltaSync",
+      startedAt: "2026-08-13T00:00:00.000Z",
+      status: 200,
+      protocol: "h3",
+      requestBodyBytes: 3,
+      requestBodySha256: "a".repeat(64),
+      safeHeaderNames: ["authorization"],
+      tokenEqualsEpochBaseline: true,
+      bootstrapStage: "ready",
+    }],
+  ])("rejects a non-discriminated auth-binding observation when %s", async (_reason, observation) => {
+    const output = io();
+    const readFile = vi.fn(async () => new TextEncoder().encode(JSON.stringify([observation])));
+
+    const code = await main([
+      "debug", "auth-binding", "classify", "--observations", "private/invalid-observation.json",
+    ], output.value, { readFile, env: { SNAP_OUTPUT: "json" } });
+
+    expect(code).toBe(3);
+    expect(output.stdout).toEqual([]);
+    expect(output.stderr.join("\n")).toContain("INVALID_CONFIG");
+  });
+
   it("rejects unsafe auth-binding paths and malformed flags", async () => {
     const env = {
       SNAP_LIVE_TESTS: "1",
@@ -622,13 +769,14 @@ describe("CLI commands", () => {
 
   it("runs each valid auth-binding probe once without emitting session credentials", async () => {
     const output = io();
+    const sharedToken = "t".repeat(64);
     const session = {
       accountId: "account-1",
       buildId: "8dd50222",
       auth: {
-        httpToken: "http-token-sentinel",
+        httpToken: sharedToken,
         cookieHeader: "cookie-sentinel",
-        gatewayToken: "gateway-token-sentinel",
+        gatewayToken: sharedToken,
       },
     };
     const request = {
@@ -637,7 +785,10 @@ describe("CLI commands", () => {
       headers: { accept: "application/grpc-web+proto" },
       bodyBase64: "AQID",
     };
-    const readFile = vi.fn(async () => new TextEncoder().encode(JSON.stringify(request)));
+    const baselineHar = authBindingBaselineHar(session.auth.httpToken);
+    const readFile = vi.fn(async (path: string) => new TextEncoder().encode(JSON.stringify(
+      path.includes("baseline") ? baselineHar : request,
+    )));
     const fetch = vi.fn(async () => new Response(null, { status: 401 }));
     const gatewayProbe = vi.fn(async () => ({
       status: 101,
@@ -663,18 +814,80 @@ describe("CLI commands", () => {
     };
 
     await expect(main([
-      "debug", "auth-binding", "probe", "--request", "private/request.json", "--mode", "node-http1", "--epoch", "epoch-a",
+      "debug", "auth-binding", "probe",
+      "--request", "private/request.json",
+      "--baseline-har", "private/baseline.har",
+      "--mode", "node-http1",
+      "--epoch", "epoch-a",
     ], output.value, dependencies)).resolves.toBe(0);
     await expect(main([
-      "debug", "auth-binding", "gateway", "--mode", "node-gateway", "--epoch", "epoch-a",
+      "debug", "auth-binding", "gateway",
+      "--baseline-har", "private/baseline.har",
+      "--mode", "node-gateway",
+      "--epoch", "epoch-a",
     ], output.value, dependencies)).resolves.toBe(0);
 
     expect(fetch).toHaveBeenCalledOnce();
     expect(gatewayProbe).toHaveBeenCalledOnce();
     expect(loadSession).toHaveBeenCalledTimes(2);
+    expect(output.stdout.map((line) => JSON.parse(line))).toEqual([
+      expect.objectContaining({ tokenEqualsEpochBaseline: true }),
+      expect.objectContaining({ tokenEqualsEpochBaseline: true }),
+    ]);
     const emitted = `${output.stdout.join("\n")}\n${output.stderr.join("\n")}`;
-    expect(emitted).not.toContain("http-token-sentinel");
+    expect(emitted).not.toContain(sharedToken);
     expect(emitted).not.toContain("cookie-sentinel");
-    expect(emitted).not.toContain("gateway-token-sentinel");
+  });
+
+  it("rejects a stale auth-binding baseline before opening a live transport", async () => {
+    const output = io();
+    const session = {
+      accountId: "account-1",
+      buildId: "8dd50222",
+      auth: {
+        httpToken: "a".repeat(64),
+        cookieHeader: "cookie-sentinel",
+        gatewayToken: "a".repeat(64),
+      },
+    };
+    const request = {
+      url: "https://web.snapchat.com/messagingcoreservice.MessagingCoreService/DeltaSync",
+      method: "POST",
+      headers: { accept: "application/grpc-web+proto" },
+      bodyBase64: "AQID",
+    };
+    const readFile = vi.fn(async (path: string) => new TextEncoder().encode(JSON.stringify(
+      path.includes("baseline") ? authBindingBaselineHar("b".repeat(64)) : request,
+    )));
+    const fetch = vi.fn();
+    const loadSession = vi.fn(async () => session as never);
+
+    const code = await main([
+      "debug", "auth-binding", "probe",
+      "--request", "private/request.json",
+      "--baseline-har", "private/baseline.har",
+      "--mode", "node-http1",
+      "--epoch", "epoch-a",
+    ], output.value, {
+      readFile,
+      fetch,
+      env: {
+        SNAP_LIVE_TESTS: "1",
+        SNAP_SESSION_FILE: "private/session.json",
+        SNAP_ASSET_DIR: "private/assets",
+        SNAP_ACCOUNT_ID: "account-1",
+        SNAP_BUILD_ID: "8dd50222",
+        SNAP_OUTPUT: "json",
+      },
+      debugAuthBinding: { loadSession, realpath: async (path: string) => path },
+    });
+
+    expect(code).toBe(3);
+    expect(loadSession).toHaveBeenCalledOnce();
+    expect(readFile).toHaveBeenCalledTimes(2);
+    expect(fetch).not.toHaveBeenCalled();
+    expect(output.stdout).toEqual([]);
+    expect(output.stderr.join("\n")).not.toContain("a".repeat(64));
+    expect(output.stderr.join("\n")).not.toContain("b".repeat(64));
   });
 });

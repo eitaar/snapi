@@ -43,7 +43,7 @@ describe("runNodeAuthBindingProbe", () => {
       operation: "messaging-read",
       status: 401,
       protocol: "http/1.1",
-      tokenEqualsEpochBaseline: true,
+      tokenEqualsEpochBaseline: false,
     });
     expect(fetch).toHaveBeenCalledOnce();
     expect(JSON.stringify(observation)).not.toContain(tokenSentinel);
@@ -88,7 +88,12 @@ describe("runNodeAuthBindingProbe", () => {
       cookie: cookieSentinel,
     }));
     expect(session.request.mock.calls[0]?.[0]).not.toHaveProperty("x-disallowed-sentinel");
-    expect(observation).toMatchObject({ context: "node-http2", status: 401, protocol: "h2" });
+    expect(observation).toMatchObject({
+      context: "node-http2",
+      status: 401,
+      protocol: "h2",
+      tokenEqualsEpochBaseline: false,
+    });
     expect(session.close).toHaveBeenCalledOnce();
     expect(session.destroy).toHaveBeenCalledOnce();
     expect(JSON.stringify(observation)).not.toContain(bodySentinel);
@@ -110,6 +115,7 @@ describe("runNodeAuthBindingProbe", () => {
       operation: "gateway-handshake",
       status: 101,
       protocol: "websocket",
+      tokenEqualsEpochBaseline: false,
     });
     expect(gatewayProbe).toHaveBeenCalledOnce();
     expect(JSON.stringify(observation)).not.toContain("set-cookie");
@@ -143,6 +149,37 @@ describe("runNodeAuthBindingProbe", () => {
     expect(JSON.stringify(invalidRequestError)).not.toContain(tokenSentinel);
     expect(JSON.stringify(missingTokenError)).not.toContain(gatewayTokenSentinel);
     expect(fetch).not.toHaveBeenCalled();
+  });
+
+  it.each(["node-http1", "node-http2"] as const)(
+    "rejects the legacy DeltaForce path in %s before opening a transport",
+    async (context) => {
+      const fetch = vi.fn();
+      const http2Connect = vi.fn();
+      const input = messagingInput(context, {
+        url: "https://web.snapchat.com/com.snapchat.deltaforce.external.DeltaForce/DeltaSync",
+      });
+
+      await expect(runNodeAuthBindingProbe(input, {
+        fetch,
+        http2Connect: http2Connect as never,
+      })).rejects.toMatchObject({ code: "INVALID_CONFIG" });
+      expect(fetch).not.toHaveBeenCalled();
+      expect(http2Connect).not.toHaveBeenCalled();
+    },
+  );
+
+  it("allows BatchDeltaSync in the auth-binding HTTP/1 probe", async () => {
+    const fetch = vi.fn(async () => new Response(null, { status: 401 }));
+
+    await expect(runNodeAuthBindingProbe(messagingInput("node-http1", {
+      url: "https://web.snapchat.com/messagingcoreservice.MessagingCoreService/BatchDeltaSync",
+    }), { fetch })).resolves.toMatchObject({
+      endpointPath: "/messagingcoreservice.MessagingCoreService/BatchDeltaSync",
+      status: 401,
+      tokenEqualsEpochBaseline: false,
+    });
+    expect(fetch).toHaveBeenCalledOnce();
   });
 
   it("maps an HTTP/2 timeout once and destroys all resources without retrying", async () => {

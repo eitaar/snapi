@@ -1,5 +1,8 @@
 import { describe, expect, it } from "vitest";
-import { summarizeAuthBindingHar } from "../../src/diagnostics/auth-binding-har.js";
+import {
+  compareAuthBindingHarTokens,
+  summarizeAuthBindingHar,
+} from "../../src/diagnostics/auth-binding-har.js";
 
 const TOKEN_SENTINEL = "token-sentinel-" + "t".repeat(80);
 const OTHER_TOKEN_SENTINEL = "other-token-" + "u".repeat(80);
@@ -16,6 +19,7 @@ function miniHar(overrides: {
   readonly gatewayAuthorization?: string;
   readonly gatewayToken?: string;
   readonly gatewayOrigin?: string;
+  readonly gatewayResponseProtocol?: string;
   readonly gatewayStartedAt?: string;
   readonly messagingStartedAt?: string;
   readonly versionMarker?: string;
@@ -62,7 +66,12 @@ function miniHar(overrides: {
                 : [{ name: "Authorization", value: overrides.gatewayAuthorization }]),
             ],
           },
-          response: { status: 101, headers: [{ name: "Sec-WebSocket-Protocol", value: "snap-ws-auth" }] },
+          response: {
+            status: 101,
+            headers: overrides.gatewayResponseProtocol === ""
+              ? []
+              : [{ name: "Sec-WebSocket-Protocol", value: overrides.gatewayResponseProtocol ?? "snap-ws-auth" }],
+          },
         }]),
         ...(overrides.includeMessaging === false ? [] : [{
           startedDateTime: overrides.messagingStartedAt ?? "2026-08-13T01:00:02.000Z",
@@ -105,6 +114,22 @@ function expectInvalidWithoutSecrets(input: object): void {
 }
 
 describe("summarizeAuthBindingHar", () => {
+  it("compares Browser baseline tokens in memory and returns booleans only", () => {
+    const matching = compareAuthBindingHarTokens(JSON.stringify(miniHar()), {
+      httpToken: TOKEN_SENTINEL,
+      gatewayToken: TOKEN_SENTINEL,
+    });
+    const stale = compareAuthBindingHarTokens(JSON.stringify(miniHar()), {
+      httpToken: OTHER_TOKEN_SENTINEL,
+      gatewayToken: OTHER_TOKEN_SENTINEL,
+    });
+
+    expect(matching).toEqual({ messaging: true, gateway: true });
+    expect(stale).toEqual({ messaging: false, gateway: false });
+    expect(JSON.stringify({ matching, stale })).not.toContain(TOKEN_SENTINEL);
+    expect(JSON.stringify({ matching, stale })).not.toContain(OTHER_TOKEN_SENTINEL);
+  });
+
   it("summarizes successful Gateway and read-only Messaging metadata without credentials", () => {
     const summary = summarizeAuthBindingHar(JSON.stringify(miniHar()));
 
@@ -116,6 +141,7 @@ describe("summarizeAuthBindingHar", () => {
       gatewayMessagingTokenEqual: true,
       gatewayOrigin: "https://www.snapchat.com",
       gatewayHasCookie: false,
+      gatewayProtocols: ["snap-ws-auth"],
     });
     expect(JSON.stringify(summary)).not.toContain(TOKEN_SENTINEL);
     expect(JSON.stringify(summary)).not.toContain(COOKIE_SENTINEL);
@@ -128,6 +154,14 @@ describe("summarizeAuthBindingHar", () => {
     })));
 
     expect(summary.buildId).toBe("8dd50222");
+  });
+
+  it.each([
+    ["missing", ""],
+    ["different", "other-protocol"],
+    ["offered-list", "snap-ws-auth, another-protocol"],
+  ])("rejects a Gateway 101 with a %s selected response protocol", (_reason, gatewayResponseProtocol) => {
+    expectInvalidWithoutSecrets(miniHar({ gatewayResponseProtocol }));
   });
 
   it.each([

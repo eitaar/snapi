@@ -2,7 +2,10 @@ import { readFile as readFileFromDisk, realpath as realpathFromDisk } from "node
 import { dirname, isAbsolute, relative, resolve, sep } from "node:path";
 import { loadConfig, loadEnvironmentFile, type AppConfig } from "../../config.js";
 import { classifyAuthBinding } from "../../diagnostics/auth-binding-classifier.js";
-import { summarizeAuthBindingHar } from "../../diagnostics/auth-binding-har.js";
+import {
+  compareAuthBindingHarTokens,
+  summarizeAuthBindingHar,
+} from "../../diagnostics/auth-binding-har.js";
 import {
   runNodeAuthBindingProbe,
   type NodeAuthBindingProbeDependencies,
@@ -33,6 +36,19 @@ const contexts = new Set<AuthBindingContext>([
 ]);
 const operations = new Set<AuthBindingOperation>(["messaging-read", "gateway-handshake"]);
 const protocols = new Set<AuthBindingProtocol>(["http/1.1", "h2", "h3", "websocket"]);
+const gatewayContexts = new Set<AuthBindingContext>([
+  "brave-natural", "brave-reload", "brave-restart", "node-gateway", "dotnet-gateway",
+]);
+const messagingContexts = new Set<AuthBindingContext>([
+  "brave-natural", "brave-reload", "brave-restart", "brave-h2-natural",
+  "brave-page-replay", "brave-worker-replay", "node-http1", "node-http2", "dotnet-http3",
+]);
+const messagingEndpointPaths = new Set([
+  "/messagingcoreservice.MessagingCoreService/DeltaSync",
+  "/messagingcoreservice.MessagingCoreService/BatchDeltaSync",
+  "/messagingcoreservice.MessagingCoreService/GetGroups",
+]);
+const gatewayEndpointPath = "/snapchat.gateway.Gateway/WebSocketConnect";
 const endpointPaths = new Set([
   "/messagingcoreservice.MessagingCoreService/DeltaSync",
   "/messagingcoreservice.MessagingCoreService/BatchDeltaSync",
@@ -220,6 +236,35 @@ function safeHeaderNames(value: unknown): readonly string[] {
   return [...value];
 }
 
+function validateObservationDiscriminator(
+  context: AuthBindingContext,
+  operation: AuthBindingOperation,
+  endpointPath: string,
+  protocol: AuthBindingProtocol,
+  requestBodyBytes: number | undefined,
+  requestBodySha256: string | undefined,
+): void {
+  if (operation === "gateway-handshake") {
+    if (
+      !gatewayContexts.has(context) || endpointPath !== gatewayEndpointPath || protocol !== "websocket" ||
+      requestBodyBytes !== undefined || requestBodySha256 !== undefined
+    ) throw invalid("Diagnostic input is invalid");
+    return;
+  }
+  if (
+    !messagingContexts.has(context) || !messagingEndpointPaths.has(endpointPath) ||
+    requestBodyBytes === undefined || requestBodySha256 === undefined
+  ) throw invalid("Diagnostic input is invalid");
+  const protocolMatches = context === "node-http1"
+    ? protocol === "http/1.1"
+    : context === "node-http2" || context === "brave-h2-natural"
+      ? protocol === "h2"
+      : context === "dotnet-http3"
+        ? protocol === "h3"
+        : protocol === "h2" || protocol === "h3";
+  if (!protocolMatches) throw invalid("Diagnostic input is invalid");
+}
+
 function parseObservation(value: unknown): SafeAuthBindingObservation {
   const candidate = object(value);
   exactKeys(candidate);
@@ -238,18 +283,29 @@ function parseObservation(value: unknown): SafeAuthBindingObservation {
   if (requestBodySha256 !== undefined && !/^[a-f0-9]{64}$/i.test(requestBodySha256)) {
     throw invalid("Diagnostic input is invalid");
   }
-  const bootstrapStage = candidate.bootstrapStage === undefined ? undefined : text(candidate.bootstrapStage, 64);
-  if (bootstrapStage !== undefined && !/^[A-Za-z0-9][A-Za-z0-9._-]*$/.test(bootstrapStage)) {
+  const bootstrapStage = candidate.bootstrapStage === undefined ? undefined : text(candidate.bootstrapStage, 10);
+  if (bootstrapStage !== undefined && bootstrapStage !== "complete" && bootstrapStage !== "incomplete") {
     throw invalid("Diagnostic input is invalid");
   }
+  const context = enumValue(candidate.context, contexts);
+  const operation = enumValue(candidate.operation, operations);
+  const protocol = enumValue(candidate.protocol, protocols);
+  validateObservationDiscriminator(
+    context,
+    operation,
+    endpointPath,
+    protocol,
+    requestBodyBytes,
+    requestBodySha256,
+  );
   return {
     authEpoch,
-    context: enumValue(candidate.context, contexts),
-    operation: enumValue(candidate.operation, operations),
+    context,
+    operation,
     endpointPath,
     startedAt,
     ...(status === undefined ? {} : { status }),
-    ...(candidate.protocol === undefined ? {} : { protocol: enumValue(candidate.protocol, protocols) }),
+    protocol,
     ...(requestBodyBytes === undefined ? {} : { requestBodyBytes }),
     ...(requestBodySha256 === undefined ? {} : { requestBodySha256 }),
     safeHeaderNames: safeHeaderNames(candidate.safeHeaderNames),
@@ -335,17 +391,25 @@ async function runProbe(
   dependencies: DebugAuthBindingDependencies,
   env: NodeJS.ProcessEnv,
 ): Promise<number> {
-  const args = parseFlags(argv, ["--request", "--mode", "--epoch"]);
+  const args = parseFlags(argv, ["--request", "--baseline-har", "--mode", "--epoch"]);
   if (args["--mode"] !== "node-http1" && args["--mode"] !== "node-http2") throw invalid("Auth-binding probe mode is invalid");
   const authEpoch = epoch(args["--epoch"]!);
   const config = configFor(env);
   const requestPath = await privatePath(config, args["--request"]!, dependencies);
+  const baselinePath = await privatePath(config, args["--baseline-har"]!, dependencies);
   const session = await configuredSession(config, dependencies);
   const request = parseRequest(await readJson(requestPath, dependencies));
+  const baseline = await readBytes(baselinePath, dependencies);
+  const comparison = compareAuthBindingHarTokens(baseline, {
+    httpToken: session.auth.httpToken,
+    gatewayToken: session.auth.gatewayToken,
+  });
+  if (!comparison.messaging) throw invalid("Auth-binding baseline does not match the configured session");
   const observation = await (dependencies.runNodeAuthBindingProbe ?? runNodeAuthBindingProbe)({
     authEpoch,
     context: args["--mode"],
     request,
+    tokenEqualsEpochBaseline: true,
     auth: {
       httpToken: session.auth.httpToken,
       cookieHeader: session.auth.cookieHeader,
@@ -366,14 +430,22 @@ async function runGateway(
   dependencies: DebugAuthBindingDependencies,
   env: NodeJS.ProcessEnv,
 ): Promise<number> {
-  const args = parseFlags(argv, ["--mode", "--epoch"]);
+  const args = parseFlags(argv, ["--baseline-har", "--mode", "--epoch"]);
   if (args["--mode"] !== "node-gateway") throw invalid("Auth-binding gateway mode is invalid");
   const authEpoch = epoch(args["--epoch"]!);
   const config = configFor(env);
+  const baselinePath = await privatePath(config, args["--baseline-har"]!, dependencies);
   const session = await configuredSession(config, dependencies);
+  const baseline = await readBytes(baselinePath, dependencies);
+  const comparison = compareAuthBindingHarTokens(baseline, {
+    httpToken: session.auth.httpToken,
+    gatewayToken: session.auth.gatewayToken,
+  });
+  if (!comparison.gateway) throw invalid("Auth-binding baseline does not match the configured session");
   const observation = await (dependencies.runNodeAuthBindingProbe ?? runNodeAuthBindingProbe)({
     authEpoch,
     context: "node-gateway",
+    tokenEqualsEpochBaseline: true,
     auth: {
       httpToken: session.auth.httpToken,
       cookieHeader: session.auth.cookieHeader,

@@ -72,6 +72,11 @@ export interface AuthBindingHarSummary {
   readonly messagingBodySha256?: string;
 }
 
+export interface AuthBindingHarTokenComparison {
+  readonly messaging: boolean;
+  readonly gateway: boolean;
+}
+
 interface HarEntry {
   readonly request: Record<string, unknown>;
   readonly response: Record<string, unknown> | undefined;
@@ -174,10 +179,17 @@ function gatewayToken(value: string | undefined): string | undefined {
   return tokens.length === 1 ? tokens[0] : undefined;
 }
 
+function selectedGatewayProtocol(entry: HarEntry): "snap-ws-auth" | undefined {
+  return headerValue(entry.response?.headers, "sec-websocket-protocol") === "snap-ws-auth"
+    ? "snap-ws-auth"
+    : undefined;
+}
+
 function isGatewaySuccess(entry: HarEntry): boolean {
   return entry.request.method === "GET" && entry.response?.status === 101 &&
     urlOf(entry)?.href === GATEWAY_URL &&
-    gatewayToken(headerValue(entry.request.headers, "sec-websocket-protocol")) !== undefined;
+    gatewayToken(headerValue(entry.request.headers, "sec-websocket-protocol")) !== undefined &&
+    selectedGatewayProtocol(entry) === "snap-ws-auth";
 }
 
 function isMessaging(entry: HarEntry): boolean {
@@ -293,7 +305,7 @@ export function summarizeAuthBindingHar(input: string | Uint8Array): AuthBinding
     gatewayHasAuthorization: hasHeader(gateway.request.headers, "authorization"),
     gatewayRequestHeaderNames: gatewayHeaders,
     messagingRequestHeaderNames: headerNames(messaging.request.headers, SAFE_MESSAGING_REQUEST_HEADERS),
-    gatewayProtocols: ["snap-ws-auth"],
+    gatewayProtocols: [selectedGatewayProtocol(gateway)!],
     messagingProtocols: safeProtocols(messages),
     ...(canonicalUtcIso(gateway.startedDateTime) === undefined
       ? {}
@@ -305,5 +317,19 @@ export function summarizeAuthBindingHar(input: string | Uint8Array): AuthBinding
       messagingBodyBytes: body.byteLength,
       messagingBodySha256: createHash("sha256").update(body).digest("hex"),
     }),
+  };
+}
+
+export function compareAuthBindingHarTokens(
+  input: string | Uint8Array,
+  tokens: { readonly httpToken: string; readonly gatewayToken: string },
+): AuthBindingHarTokenComparison {
+  summarizeAuthBindingHar(input);
+  const entries = entriesFrom(parseHar(input));
+  const gateway = latest(entries.filter(isGatewaySuccess))!;
+  const messaging = latest(entries.filter(isReadOnlyMessagingSuccess))!;
+  return {
+    messaging: bearerToken(headerValue(messaging.request.headers, "authorization")) === tokens.httpToken,
+    gateway: gatewayToken(headerValue(gateway.request.headers, "sec-websocket-protocol")) === tokens.gatewayToken,
   };
 }

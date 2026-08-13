@@ -10,7 +10,8 @@
     "requestBodyBytes": 3,
     "requestBodySha256": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
     "safeHeaderNames": ["accept", "content-type"],
-    "tokenEqualsEpochBaseline": true
+    "tokenEqualsEpochBaseline": true,
+    "networkRouteEqualsBaseline": true
   },
   {
     "authEpoch": "epoch-a",
@@ -23,6 +24,7 @@
     "requestBodyBytes": 3,
     "requestBodySha256": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
     "safeHeaderNames": ["accept", "content-type"],
-    "tokenEqualsEpochBaseline": true
+    "tokenEqualsEpochBaseline": true,
+    "networkRouteEqualsBaseline": true
   }
 ]
