@@ -49,25 +49,26 @@ if ($mode -eq 'protect') {
 `;
 
 async function dpapi(mode: "protect" | "unprotect", payload: Uint8Array): Promise<Uint8Array> {
+  const unavailableCode = mode === "unprotect" ? "SESSION_SECRET_UNAVAILABLE" : "AUTH_CONTEXT_UNAVAILABLE";
   if (process.platform !== "win32") {
-    throw new AppError("AUTH_CONTEXT_UNAVAILABLE", "Sealed session storage requires Windows DPAPI");
+    throw new AppError(unavailableCode, "Sealed session storage requires Windows DPAPI");
   }
   let result: PowerShellResult;
   try {
     result = await runPowerShell(DPAPI_SCRIPT, `${mode}\n${Buffer.from(payload).toString("base64")}\n`);
   } catch (error) {
-    throw new AppError("AUTH_CONTEXT_UNAVAILABLE", "Windows PowerShell is unavailable for sealed session storage", {
+    throw new AppError(unavailableCode, "Windows PowerShell is unavailable for sealed session storage", {
       errorName: error instanceof Error ? error.name : "UnknownError",
     });
   }
   const output = result.stdout.trim();
   if (result.code !== 0 || output === "") {
-    throw new AppError("AUTH_CONTEXT_UNAVAILABLE", "Windows DPAPI could not access the sealed session");
+    throw new AppError(unavailableCode, "Windows DPAPI could not access the sealed session");
   }
   try {
     return Uint8Array.from(Buffer.from(output, "base64"));
   } catch {
-    throw new AppError("AUTH_CONTEXT_UNAVAILABLE", "Windows DPAPI returned invalid sealed session data");
+    throw new AppError(unavailableCode, "Windows DPAPI returned invalid sealed session data");
   }
 }
 

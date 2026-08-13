@@ -47,4 +47,12 @@ describe("CookieJar", () => {
     now += 11_000;
     expect(jar.headerFor("https://web.snapchat.com/")).toBe("secure=yes");
   });
+
+  it("rejects a Set-Cookie domain outside the response host", () => {
+    const jar = new CookieJar();
+    jar.setFromResponse("https://web.snapchat.com/", ["leak=blocked; Domain=evil.example; Path=/"]);
+
+    expect(jar.headerFor("https://web.snapchat.com/")).toBe("");
+    expect(jar.headerFor("https://evil.example/")).toBe("");
+  });
 });

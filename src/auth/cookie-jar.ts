@@ -95,13 +95,17 @@ export class CookieJar {
       let secure = false;
       let expiresAt: number | undefined;
       let maxAge: number | undefined;
+      let validDomain = true;
       for (const attribute of parts) {
         const parsed = parsePair(attribute.trim());
         const name = (parsed?.name ?? attribute.trim()).toLowerCase();
         const attributeValue = parsed?.value ?? "";
         if (name === "domain" && attributeValue !== "") {
           const candidate = attributeValue.replace(/^\./, "").toLowerCase();
-          if (!domainMatches(requestHost, candidate, false)) continue;
+          if (!domainMatches(requestHost, candidate, false)) {
+            validDomain = false;
+            break;
+          }
           domain = candidate;
           hostOnly = false;
         } else if (name === "path" && attributeValue.startsWith("/")) {
@@ -116,6 +120,7 @@ export class CookieJar {
           if (!Number.isNaN(parsedDate)) expiresAt = parsedDate;
         }
       }
+      if (!validDomain) continue;
       if (maxAge !== undefined) expiresAt = maxAge <= 0 ? now : now + maxAge * 1000;
       const cookie: StoredCookie = {
         ...pair,
