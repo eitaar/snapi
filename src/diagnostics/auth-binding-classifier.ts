@@ -27,11 +27,29 @@ function sameBody(
     left.requestBodySha256 === right.requestBodySha256;
 }
 
+function sameHeaderNameSet(
+  left: readonly string[],
+  right: readonly string[],
+): boolean {
+  const leftNames = new Set(left);
+  const rightNames = new Set(right);
+  return leftNames.size === rightNames.size && [...leftNames].every((name) => rightNames.has(name));
+}
+
+function sameComparisonIdentity(
+  left: SafeAuthBindingObservation,
+  right: SafeAuthBindingObservation,
+): boolean {
+  return sameBody(left, right) &&
+    left.endpointPath === right.endpointPath &&
+    sameHeaderNameSet(left.safeHeaderNames, right.safeHeaderNames);
+}
+
 function comparisons(observations: readonly SafeAuthBindingObservation[]): readonly Comparison[] {
   return observations.flatMap((success) =>
     isSuccess(success)
       ? observations.flatMap((rejected) =>
-        isRejected(rejected) && success.operation === rejected.operation && sameBody(success, rejected)
+        isRejected(rejected) && success.operation === rejected.operation && sameComparisonIdentity(success, rejected)
           ? [[success, rejected] as const]
           : [],
       )
