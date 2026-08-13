@@ -72,12 +72,18 @@ describe('probe-auth-binding-http3 PowerShell contract', () => {
 
   it('uses exact HAR-only captured and static header allowlists with membership gates', () => {
     const script = readFileSync(scriptPath, 'utf8');
-    const capturedHeaderNames = script.match(
+    const capturedHeaderBlock = script.match(
       /\$AllowedCapturedHeaderNames\s*=\s*@\(([\s\S]*?)\n\)/,
-    )?.[1].match(/'([^']+)'/g)?.map((name) => name.slice(1, -1));
-    const staticHeaderNames = script.match(
+    )?.[1] ?? '';
+    const capturedHeaderNames = [...capturedHeaderBlock.matchAll(/'([^']+)'/g)].flatMap(
+      (match) => (match[1] === undefined ? [] : [match[1]]),
+    );
+    const staticHeaderBlock = script.match(
       /\$StaticHeaders\s*=\s*\[ordered\]@\{([\s\S]*?)\n\}/,
-    )?.[1].match(/'([^']+)'\s*=/g)?.map((name) => name.match(/'([^']+)'/)?.[1]);
+    )?.[1] ?? '';
+    const staticHeaderNames = [...staticHeaderBlock.matchAll(/'([^']+)'\s*=/g)].flatMap(
+      (match) => (match[1] === undefined ? [] : [match[1]]),
+    );
 
     expect(capturedHeaderNames).toEqual([
       'authorization',
@@ -133,7 +139,11 @@ describe('probe-auth-binding-http3 PowerShell contract', () => {
       expect(result.stderr, args.join(' ')).toBe('');
       const outputLines = result.stdout.trim().split(/\r?\n/);
       expect(outputLines).toHaveLength(1);
-      expect(JSON.parse(outputLines[0])).toMatchObject({
+      const outputLine = outputLines[0];
+      if (outputLine === undefined) {
+        throw new Error('expected one sanitized JSON output line');
+      }
+      expect(JSON.parse(outputLine)).toMatchObject({
         context: 'dotnet-http3',
         operation: 'messaging-read',
         transportError: 'invalid-input',
