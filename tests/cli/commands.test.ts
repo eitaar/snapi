@@ -1,7 +1,7 @@
 import { describe, expect, it, vi } from "vitest";
 import { mkdtemp, readFile as readFileFromDisk, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
-import { join } from "node:path";
+import { join, resolve } from "node:path";
 import { main, type ConfiguredCliClient } from "../../src/cli/index.js";
 import { AppError } from "../../src/errors.js";
 
@@ -469,6 +469,7 @@ describe("CLI commands", () => {
         SNAP_BUILD_ID: "8dd50222",
         SNAP_OUTPUT: "json",
       },
+      debugAuthBinding: { realpath: async (path) => path },
     });
 
     expect(code).toBe(0);
@@ -488,16 +489,92 @@ describe("CLI commands", () => {
     const readFile = vi.fn();
     const fetch = vi.fn();
     const loadSession = vi.fn();
+    const originalLoadEnvFile = process.loadEnvFile;
+    const loadEnvFile = vi.fn();
+    const originalLiveTests = process.env.SNAP_LIVE_TESTS;
+    delete process.env.SNAP_LIVE_TESTS;
+    process.loadEnvFile = loadEnvFile;
+
+    try {
+      const code = await main([
+        "debug", "auth-binding", "probe", "--request", "private/request.json", "--mode", "node-http1", "--epoch", "epoch-a",
+      ], output.value, { readFile, fetch, debugAuthBinding: { loadSession } });
+
+      expect(code).toBe(3);
+      expect(output.stderr.join("\n")).toContain("INVALID_CONFIG");
+      expect(readFile).not.toHaveBeenCalled();
+      expect(fetch).not.toHaveBeenCalled();
+      expect(loadSession).not.toHaveBeenCalled();
+      expect(loadEnvFile).not.toHaveBeenCalled();
+    } finally {
+      process.loadEnvFile = originalLoadEnvFile;
+      if (originalLiveTests === undefined) delete process.env.SNAP_LIVE_TESTS;
+      else process.env.SNAP_LIVE_TESTS = originalLiveTests;
+    }
+  });
+
+  it("rejects unsafe auth-binding epochs before any read, session, transport, or output", async () => {
+    const secret = "Bearer secret";
+    const env = {
+      SNAP_LIVE_TESTS: "1",
+      SNAP_SESSION_FILE: "private/session.json",
+      SNAP_ASSET_DIR: "private/assets",
+      SNAP_ACCOUNT_ID: "account-1",
+      SNAP_BUILD_ID: "8dd50222",
+      SNAP_OUTPUT: "json",
+    };
+    const cases: readonly (readonly string[])[] = [
+      ["debug", "auth-binding", "har", "--file", "private/capture.har", "--epoch", secret],
+      ["debug", "auth-binding", "probe", "--request", "private/request.json", "--mode", "node-http1", "--epoch", secret],
+      ["debug", "auth-binding", "gateway", "--mode", "node-gateway", "--epoch", secret],
+    ];
+
+    for (const argv of cases) {
+      const output = io();
+      const readFile = vi.fn();
+      const fetch = vi.fn();
+      const loadSession = vi.fn();
+      const code = await main(argv, output.value, {
+        readFile,
+        fetch,
+        env,
+        debugAuthBinding: { loadSession },
+      });
+      const emitted = `${output.stdout.join("\n")}\n${output.stderr.join("\n")}`;
+
+      expect(code).toBe(3);
+      expect(readFile).not.toHaveBeenCalled();
+      expect(fetch).not.toHaveBeenCalled();
+      expect(loadSession).not.toHaveBeenCalled();
+      expect(emitted).not.toContain(secret);
+    }
+  });
+
+  it("rejects an auth-binding file that resolves outside the configured private directory", async () => {
+    const output = io();
+    const readFile = vi.fn();
+    const realpath = vi.fn(async (path: string) => path.endsWith("capture.har")
+      ? resolve("outside", "capture.har")
+      : resolve("private"));
 
     const code = await main([
-      "debug", "auth-binding", "probe", "--request", "private/request.json", "--mode", "node-http1", "--epoch", "epoch-a",
-    ], output.value, { readFile, fetch, env: {}, debugAuthBinding: { loadSession } });
+      "debug", "auth-binding", "har", "--file", "private/capture.har", "--epoch", "epoch-a",
+    ], output.value, {
+      readFile,
+      env: {
+        SNAP_SESSION_FILE: "private/session.json",
+        SNAP_ASSET_DIR: "private/assets",
+        SNAP_ACCOUNT_ID: "account-1",
+        SNAP_BUILD_ID: "8dd50222",
+        SNAP_OUTPUT: "json",
+      },
+      debugAuthBinding: { realpath },
+    });
 
     expect(code).toBe(3);
-    expect(output.stderr.join("\n")).toContain("INVALID_CONFIG");
+    expect(realpath).toHaveBeenCalledTimes(2);
     expect(readFile).not.toHaveBeenCalled();
-    expect(fetch).not.toHaveBeenCalled();
-    expect(loadSession).not.toHaveBeenCalled();
+    expect(output.stdout).toEqual([]);
   });
 
   it("classifies the tracked sanitized observations offline", async () => {
@@ -582,7 +659,7 @@ describe("CLI commands", () => {
         SNAP_BUILD_ID: "8dd50222",
         SNAP_OUTPUT: "json",
       },
-      debugAuthBinding: { loadSession, gatewayProbe },
+      debugAuthBinding: { loadSession, gatewayProbe, realpath: async (path: string) => path },
     };
 
     await expect(main([

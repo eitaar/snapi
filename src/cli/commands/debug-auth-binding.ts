@@ -1,4 +1,4 @@
-import { readFile as readFileFromDisk } from "node:fs/promises";
+import { readFile as readFileFromDisk, realpath as realpathFromDisk } from "node:fs/promises";
 import { dirname, isAbsolute, relative, resolve, sep } from "node:path";
 import { loadConfig, loadEnvironmentFile, type AppConfig } from "../../config.js";
 import { classifyAuthBinding } from "../../diagnostics/auth-binding-classifier.js";
@@ -66,6 +66,7 @@ export interface DebugAuthBindingDependencies {
   readonly fetch?: typeof globalThis.fetch;
   readonly now?: () => Date;
   readonly env?: NodeJS.ProcessEnv;
+  readonly realpath?: (path: string) => Promise<string>;
   readonly loadSession?: typeof loadSession;
   readonly gatewayProbe?: NodeAuthBindingProbeDependencies["gatewayProbe"];
   readonly http2Connect?: NodeAuthBindingProbeDependencies["http2Connect"];
@@ -125,14 +126,33 @@ function parseFlags(argv: readonly string[], allowed: readonly string[]): Readon
   }));
 }
 
-function privatePath(config: AppConfig, suppliedPath: string): string {
-  const root = resolve(dirname(config.sessionFile));
+function epoch(value: string): string {
+  if (value.length > 64 || !/^[A-Za-z0-9][A-Za-z0-9._-]*$/.test(value)) {
+    throw invalid("Auth-binding epoch is invalid");
+  }
+  return value;
+}
+
+async function privatePath(
+  config: AppConfig,
+  suppliedPath: string,
+  dependencies: DebugAuthBindingDependencies,
+): Promise<string> {
   const candidate = resolve(suppliedPath);
-  const pathFromRoot = relative(root, candidate);
+  const resolveRealpath = dependencies.realpath ?? realpathFromDisk;
+  let root: string;
+  let resolvedCandidate: string;
+  try {
+    root = await resolveRealpath(dirname(config.sessionFile));
+    resolvedCandidate = await resolveRealpath(candidate);
+  } catch {
+    throw invalid("Unable to resolve diagnostic input");
+  }
+  const pathFromRoot = relative(root, resolvedCandidate);
   if (pathFromRoot === "" || pathFromRoot === ".." || pathFromRoot.startsWith(`..${sep}`) || isAbsolute(pathFromRoot)) {
     throw invalid("Diagnostic input must be inside the configured private directory");
   }
-  return candidate;
+  return resolvedCandidate;
 }
 
 async function readBytes(
@@ -301,8 +321,9 @@ async function runHar(
   env: NodeJS.ProcessEnv,
 ): Promise<number> {
   const args = parseFlags(argv, ["--file", "--epoch"]);
+  epoch(args["--epoch"]!);
   const config = configFor(env);
-  const file = privatePath(config, args["--file"]!);
+  const file = await privatePath(config, args["--file"]!, dependencies);
   const summary = summarizeAuthBindingHar(await readBytes(file, dependencies));
   emit(io, outputFormat(env), "debug.auth-binding.har", summary);
   return 0;
@@ -314,15 +335,15 @@ async function runProbe(
   dependencies: DebugAuthBindingDependencies,
   env: NodeJS.ProcessEnv,
 ): Promise<number> {
-  if (env.SNAP_LIVE_TESTS !== "1") throw invalid("Set SNAP_LIVE_TESTS=1 to run the read-only auth-binding probe");
   const args = parseFlags(argv, ["--request", "--mode", "--epoch"]);
   if (args["--mode"] !== "node-http1" && args["--mode"] !== "node-http2") throw invalid("Auth-binding probe mode is invalid");
+  const authEpoch = epoch(args["--epoch"]!);
   const config = configFor(env);
-  const requestPath = privatePath(config, args["--request"]!);
+  const requestPath = await privatePath(config, args["--request"]!, dependencies);
   const session = await configuredSession(config, dependencies);
   const request = parseRequest(await readJson(requestPath, dependencies));
   const observation = await (dependencies.runNodeAuthBindingProbe ?? runNodeAuthBindingProbe)({
-    authEpoch: args["--epoch"]!,
+    authEpoch,
     context: args["--mode"],
     request,
     auth: {
@@ -345,13 +366,13 @@ async function runGateway(
   dependencies: DebugAuthBindingDependencies,
   env: NodeJS.ProcessEnv,
 ): Promise<number> {
-  if (env.SNAP_LIVE_TESTS !== "1") throw invalid("Set SNAP_LIVE_TESTS=1 to run the read-only auth-binding probe");
   const args = parseFlags(argv, ["--mode", "--epoch"]);
   if (args["--mode"] !== "node-gateway") throw invalid("Auth-binding gateway mode is invalid");
+  const authEpoch = epoch(args["--epoch"]!);
   const config = configFor(env);
   const session = await configuredSession(config, dependencies);
   const observation = await (dependencies.runNodeAuthBindingProbe ?? runNodeAuthBindingProbe)({
-    authEpoch: args["--epoch"]!,
+    authEpoch,
     context: "node-gateway",
     auth: {
       httpToken: session.auth.httpToken,
@@ -385,8 +406,12 @@ export async function runDebugAuthBinding(
   io: CliIo,
   dependencies: DebugAuthBindingDependencies = {},
 ): Promise<number> {
-  const env = environment(dependencies);
   const command = argv[0];
+  if ((command === "probe" || command === "gateway") &&
+    (dependencies.env ?? process.env).SNAP_LIVE_TESTS !== "1") {
+    throw invalid("Set SNAP_LIVE_TESTS=1 to run the read-only auth-binding probe");
+  }
+  const env = environment(dependencies);
   if (command === "har") return runHar(argv.slice(1), io, dependencies, env);
   if (command === "probe") return runProbe(argv.slice(1), io, dependencies, env);
   if (command === "gateway") return runGateway(argv.slice(1), io, dependencies, env);
