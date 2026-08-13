@@ -7,9 +7,9 @@ protected message envelopes. The current supported Web build is only
 
 This uses an undocumented private API. Snapchat can change the bundle,
 authentication, protocol, or account policy at any time. Use only managed test
-accounts and conversations you control. The project does not automate login,
-2FA, account recovery, or rate-limit bypass. It never extracts or spoofs
-browser-managed session keys.
+accounts and conversations you control. The project does not automate account
+recovery, CAPTCHA, device approval, or rate-limit bypass. It never extracts or
+spoofs browser-managed session keys.
 
 ## Requirements and setup
 
@@ -56,6 +56,7 @@ is required.
 
 ```powershell
 node dist/cli/index.js session check
+node dist/cli/index.js session login
 node dist/cli/index.js session import private/fresh-session.json
 node dist/cli/index.js session refresh-har private/fresh.har
 node dist/cli/index.js chat send <recipient-uuid> "test message" --conversation-id <conversation-uuid>
@@ -81,11 +82,31 @@ Messaging and Gateway requests use different tokens. Later successful
 `session import` validates the export and every declared asset hash while
 holding the account's single-writer lock, then atomically installs it.
 
+`session login` contains the prompt-independent credential/OTP state machine
+and masks password/OTP input when the terminal supports raw mode. Password and
+OTP buffers are cleared after each submission and are never persisted. The
+default pinned build currently has no verified WebLogin protobuf contract in
+this checkout, so the command stops with `UNSUPPORTED_BUILD` before prompting
+for credentials; it will not guess fields from a HAR. Use `session import` or
+`session refresh-har` until a sanitized, build-verified WebLogin adapter is
+installed.
+
+Session state written by import, HAR refresh, login finalization, or automatic
+renewal is stored in a Windows DPAPI-sealed envelope. A legacy plaintext
+format-version-1 file is accepted for validation and is sealed on the first
+explicit migration write; its plaintext atomic backup is removed after the
+sealed write succeeds.
+
 Chat and photo commands acquire a single-writer account lock, verify the pinned
 build before network access, initialize the official runtime, send once, and
 persist updated cryptographic state. Photo input is limited to validated JPEG
 or PNG files up to 10 MiB. Media is AES-encrypted before the signed Snap CDN
 upload; signed URLs and key material are never emitted.
+
+PNG Photo Snap and text Chat are one-shot operations. A confirmed server result
+is reported as success even if final Worker cleanup needs forced termination.
+An ambiguous result is reported as `DELIVERY_UNCONFIRMED` and is never retried
+automatically; rerunning the command is a separate operator decision.
 
 `chat watch` asks the official messaging runtime to synchronize the feed,
 decodes only official text MessageContent values, persists updated

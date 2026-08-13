@@ -1,5 +1,27 @@
 # Session export format
 
+## At-rest storage
+
+The CLI writes the current session as a DPAPI-sealed JSON envelope:
+
+```json
+{
+  "kind": "snapchat-sealed-session",
+  "version": 1,
+  "ciphertext": "<base64 ciphertext>"
+}
+```
+
+The bearer token, Cookie headers, nonce state, and messaging state are inside
+the ciphertext. The envelope contains no session metadata that is needed for
+request construction. Decryption uses the current Windows user's DPAPI
+context; another Windows user cannot use the file.
+
+Legacy format-version-1 JSON exports remain readable for migration. Import,
+HAR refresh, or the first client/gateway startup that explicitly migrates the
+file writes the sealed envelope atomically and removes the plaintext
+`.previous` backup after verification.
+
 The CLI accepts a JSON session export with `formatVersion: 1`. The export is a
 secret: it contains authentication credentials and end-to-end-encryption key
 state. Store it under `private/` (ignored by Git), restrict access to the
