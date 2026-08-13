@@ -50,4 +50,81 @@ describe("official friend state serialization", () => {
     });
   });
 
+  it("includes confirmed and outgoing relationship IDs when detail maps are incomplete", () => {
+    const snapshot = serializeOfficialFriendState({
+      friendsSyncStatus: "success",
+      mutualOutgoingAndBlockedFriends: new Map(),
+      incomingFriendRequests: new Map(),
+      mutuallyConfirmedFriendIds: ["id-confirmed"],
+      outgoingFriendRequestIds: ["id-outgoing"],
+      publicUsers: new Map([
+        ["id-confirmed", { user_id: "id-confirmed", mutable_username: "alice" }],
+      ]),
+    }, "2026-08-12T00:00:00.000Z");
+
+    expect(snapshot.friends).toEqual([
+      {
+        userId: "id-confirmed",
+        username: "alice",
+        status: "friend",
+        direction: "mutual",
+      },
+      {
+        userId: "id-outgoing",
+        status: "pending",
+        direction: "outgoing",
+      },
+    ]);
+  });
+
+  it("retains detailed map metadata when a confirmed ID also exists", () => {
+    const snapshot = serializeOfficialFriendState({
+      friendsSyncStatus: "success",
+      mutualOutgoingAndBlockedFriends: new Map([
+        ["id-confirmed", { user_id: "id-confirmed", mutable_username: "alice", ts: "123" }],
+      ]),
+      incomingFriendRequests: new Map(),
+      mutuallyConfirmedFriendIds: ["id-confirmed"],
+      publicUsers: new Map(),
+    }, "2026-08-12T00:00:00.000Z");
+
+    expect(snapshot.friends).toEqual([{
+      userId: "id-confirmed",
+      username: "alice",
+      status: "friend",
+      direction: "mutual",
+      addedAt: "123",
+    }]);
+  });
+
+  it("normalizes official UUID wrapper objects in relationship arrays and records", () => {
+    const snapshot = serializeOfficialFriendState({
+      friendsSyncStatus: "success",
+      mutualOutgoingAndBlockedFriends: new Map([
+        [{ id: "id-confirmed", str: "id-confirmed" }, {
+          user_id: { id: "id-confirmed", str: "id-confirmed" },
+          mutable_username: "alice",
+        }],
+      ]),
+      incomingFriendRequests: new Map(),
+      mutuallyConfirmedFriendIds: [{ id: "id-confirmed", str: "id-confirmed" }],
+      outgoingFriendRequestIds: [{ id: "id-outgoing", str: "id-outgoing" }],
+      publicUsers: new Map(),
+    }, "2026-08-12T00:00:00.000Z");
+
+    expect(snapshot.friends).toEqual([
+      {
+        userId: "id-confirmed",
+        username: "alice",
+        status: "friend",
+        direction: "mutual",
+      },
+      {
+        userId: "id-outgoing",
+        status: "pending",
+        direction: "outgoing",
+      },
+    ]);
+  });
+
 });
