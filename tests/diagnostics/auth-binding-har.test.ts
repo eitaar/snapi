@@ -5,13 +5,19 @@ const TOKEN_SENTINEL = "token-sentinel-" + "t".repeat(80);
 const OTHER_TOKEN_SENTINEL = "other-token-" + "u".repeat(80);
 const COOKIE_SENTINEL = "cookie-sentinel";
 const HEADER_NAME_SENTINEL = "credential-header-sentinel";
+const ARBITRARY_ORIGIN = "https://untrusted.example/opaque-origin";
+const ARBITRARY_TIMESTAMP = "timestamp-sentinel";
 
 function miniHar(overrides: {
   readonly includeGateway?: boolean;
   readonly includeMessaging?: boolean;
   readonly includeWrite?: boolean;
   readonly includeVersionMarker?: boolean;
+  readonly gatewayAuthorization?: string;
   readonly gatewayToken?: string;
+  readonly gatewayOrigin?: string;
+  readonly gatewayStartedAt?: string;
+  readonly messagingStartedAt?: string;
   readonly versionMarker?: string;
   readonly messagingHttpVersion?: string;
   readonly messagingPostData?: Record<string, string>;
@@ -43,19 +49,22 @@ function miniHar(overrides: {
           response: { status: 200, headers: [] },
         },
         ...(overrides.includeGateway === false ? [] : [{
-          startedDateTime: "2026-08-13T01:00:01.000Z",
+          startedDateTime: overrides.gatewayStartedAt ?? "2026-08-13T01:00:01.000Z",
           request: {
             method: "GET",
             url: "wss://aws.duplex.snapchat.com/snapchat.gateway.Gateway/WebSocketConnect",
             headers: [
               { name: "Sec-WebSocket-Protocol", value: `snap-ws-auth, ${gatewayToken}` },
-              { name: "Origin", value: "https://www.snapchat.com" },
+              { name: "Origin", value: overrides.gatewayOrigin ?? "https://www.snapchat.com" },
+              ...(overrides.gatewayAuthorization === undefined
+                ? []
+                : [{ name: "Authorization", value: overrides.gatewayAuthorization }]),
             ],
           },
           response: { status: 101, headers: [{ name: "Sec-WebSocket-Protocol", value: "snap-ws-auth" }] },
         }]),
         ...(overrides.includeMessaging === false ? [] : [{
-          startedDateTime: "2026-08-13T01:00:02.000Z",
+          startedDateTime: overrides.messagingStartedAt ?? "2026-08-13T01:00:02.000Z",
           request: {
             method: "POST",
             url: "https://web.snapchat.com/messagingcoreservice.MessagingCoreService/DeltaSync",
@@ -160,5 +169,41 @@ describe("summarizeAuthBindingHar", () => {
     })));
 
     expect(summary.messagingProtocols).toEqual(["h2"]);
+  });
+
+  it("detects a Gateway Authorization header without returning its value or name", () => {
+    const summary = summarizeAuthBindingHar(JSON.stringify(miniHar({
+      gatewayAuthorization: `Bearer ${TOKEN_SENTINEL}`,
+    })));
+
+    expect(summary.gatewayHasAuthorization).toBe(true);
+    expect(summary.gatewayRequestHeaderNames).not.toContain("authorization");
+    expect(JSON.stringify(summary)).not.toContain(TOKEN_SENTINEL);
+  });
+
+  it("omits arbitrary Gateway origin and timestamp values", () => {
+    const summary = summarizeAuthBindingHar(JSON.stringify(miniHar({
+      gatewayOrigin: ARBITRARY_ORIGIN,
+      gatewayStartedAt: ARBITRARY_TIMESTAMP,
+      messagingStartedAt: ARBITRARY_TIMESTAMP,
+    })));
+
+    expect(summary).not.toHaveProperty("gatewayOrigin");
+    expect(summary).not.toHaveProperty("gatewayStartedAt");
+    expect(summary).not.toHaveProperty("messagingStartedAt");
+    expect(JSON.stringify(summary)).not.toContain(ARBITRARY_ORIGIN);
+    expect(JSON.stringify(summary)).not.toContain(ARBITRARY_TIMESTAMP);
+  });
+
+  it("canonicalizes strict UTC timestamps before returning them", () => {
+    const summary = summarizeAuthBindingHar(JSON.stringify(miniHar({
+      gatewayStartedAt: "2026-08-13T01:00:01Z",
+      messagingStartedAt: "2026-08-13T01:00:02.5Z",
+    })));
+
+    expect(summary).toMatchObject({
+      gatewayStartedAt: "2026-08-13T01:00:01.000Z",
+      messagingStartedAt: "2026-08-13T01:00:02.500Z",
+    });
   });
 });

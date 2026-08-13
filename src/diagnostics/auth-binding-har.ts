@@ -4,6 +4,7 @@ import { AppError } from "../errors.js";
 const BUILD_ID = "8dd50222" as const;
 const GATEWAY_URL = "wss://aws.duplex.snapchat.com/snapchat.gateway.Gateway/WebSocketConnect";
 const MESSAGING_ORIGIN = "https://web.snapchat.com";
+const EXPECTED_GATEWAY_ORIGIN = "https://www.snapchat.com";
 const READ_ONLY_MESSAGING_PATHS = new Set([
   "/messagingcoreservice.MessagingCoreService/DeltaSync",
   "/messagingcoreservice.MessagingCoreService/BatchDeltaSync",
@@ -130,6 +131,15 @@ function headerValue(headers: unknown, name: string): string | undefined {
   return undefined;
 }
 
+function hasHeader(headers: unknown, name: string): boolean {
+  if (!Array.isArray(headers)) return false;
+  const target = name.toLowerCase();
+  return headers.some((candidate) => {
+    const header = record(candidate);
+    return typeof header?.name === "string" && header.name.toLowerCase() === target;
+  });
+}
+
 function headerNames(headers: unknown, allowed: ReadonlySet<string>): readonly string[] {
   if (!Array.isArray(headers)) return [];
   return [...new Set(headers.flatMap((candidate) => {
@@ -230,6 +240,20 @@ function buildIsPinned(entries: readonly HarEntry[]): boolean {
   });
 }
 
+function safeGatewayOrigin(value: string | undefined): string | undefined {
+  return value === EXPECTED_GATEWAY_ORIGIN ? EXPECTED_GATEWAY_ORIGIN : undefined;
+}
+
+function canonicalUtcIso(value: string | undefined): string | undefined {
+  const match = /^(\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2})(?:\.(\d{1,3}))?Z$/.exec(value ?? "");
+  if (match === null) return undefined;
+  const canonicalInput = `${match[1]}.${(match[2] ?? "").padEnd(3, "0")}Z`;
+  const parsed = new Date(canonicalInput);
+  return Number.isNaN(parsed.getTime()) || parsed.toISOString() !== canonicalInput
+    ? undefined
+    : parsed.toISOString();
+}
+
 export function summarizeAuthBindingHar(input: string | Uint8Array): AuthBindingHarSummary {
   const har = parseHar(input);
   const entries = entriesFrom(har);
@@ -257,17 +281,21 @@ export function summarizeAuthBindingHar(input: string | Uint8Array): AuthBinding
     messagingSuccessCount: messages.length,
     messagingWriteCount: writes.length,
     gatewayMessagingTokenEqual: true,
-    ...(headerValue(gateway.request.headers, "origin") === undefined
+    ...(safeGatewayOrigin(headerValue(gateway.request.headers, "origin")) === undefined
       ? {}
-      : { gatewayOrigin: headerValue(gateway.request.headers, "origin")! }),
+      : { gatewayOrigin: EXPECTED_GATEWAY_ORIGIN }),
     gatewayHasCookie: gatewayHeaders.includes("cookie"),
-    gatewayHasAuthorization: gatewayHeaders.includes("authorization"),
+    gatewayHasAuthorization: hasHeader(gateway.request.headers, "authorization"),
     gatewayRequestHeaderNames: gatewayHeaders,
     messagingRequestHeaderNames: headerNames(messaging.request.headers, SAFE_MESSAGING_REQUEST_HEADERS),
     gatewayProtocols: ["snap-ws-auth"],
     messagingProtocols: safeProtocols(messages),
-    ...(gateway.startedDateTime === undefined ? {} : { gatewayStartedAt: gateway.startedDateTime }),
-    ...(messaging.startedDateTime === undefined ? {} : { messagingStartedAt: messaging.startedDateTime }),
+    ...(canonicalUtcIso(gateway.startedDateTime) === undefined
+      ? {}
+      : { gatewayStartedAt: canonicalUtcIso(gateway.startedDateTime)! }),
+    ...(canonicalUtcIso(messaging.startedDateTime) === undefined
+      ? {}
+      : { messagingStartedAt: canonicalUtcIso(messaging.startedDateTime)! }),
     ...(body === undefined ? {} : {
       messagingBodyBytes: body.byteLength,
       messagingBodySha256: createHash("sha256").update(body).digest("hex"),
