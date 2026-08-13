@@ -82,7 +82,7 @@ function Exit-SanitizedFailure {
 
 $resultAuthEpoch = $null
 $endpointPath = $DefaultEndpointPath
-$startedAt = [DateTimeOffset]::UtcNow.ToString('yyyy-MM-ddTHH:mm:ss.fffZ')
+$startedAt = [DateTimeOffset]::UtcNow.ToString('yyyy-MM-ddTHH:mm:ss.fffZ', [System.Globalization.CultureInfo]::InvariantCulture)
 $requestBodyBytes = $null
 $requestBodySha256 = $null
 $safeHeaderNames = @()
@@ -225,7 +225,7 @@ try {
     $selectedRequest = $selectedEntry.GetProperty('request')
     $selectedUrl = $selectedRequest.GetProperty('url').GetString()
     $endpointPath = ([Uri]$selectedUrl).AbsolutePath
-    if ($null -ne $selectedStartedAt) { $startedAt = $selectedStartedAt.ToUniversalTime().ToString('yyyy-MM-ddTHH:mm:ss.fffZ') }
+    if ($null -ne $selectedStartedAt) { $startedAt = $selectedStartedAt.ToUniversalTime().ToString('yyyy-MM-ddTHH:mm:ss.fffZ', [System.Globalization.CultureInfo]::InvariantCulture) }
     $selectedPostData = $selectedRequest.GetProperty('postData')
     $bodyText = $selectedPostData.GetProperty('text').GetString()
     $encoding = ''
