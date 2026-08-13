@@ -3,6 +3,7 @@ import { mkdir, writeFile } from "node:fs/promises";
 import { dirname, resolve } from "node:path";
 import { AssetLoader } from "../../compat/asset-loader.js";
 import { finalizeWebAttestation } from "../../auth/web-attestation.js";
+import { applyCookieOverrides, type CookieOverrides } from "../../auth/cookie-overrides.js";
 import { CompatibilityGuard, SUPPORTED_ASSETS } from "../../compat/guard.js";
 import { loadConfig, loadEnvironmentFile, type AppConfig } from "../../config.js";
 import { AppError } from "../../errors.js";
@@ -161,6 +162,13 @@ export interface RuntimeDoctorDependencies {
   readonly writeReport?: (report: FeasibilityReport) => Promise<void>;
 }
 
+export function applyRuntimeDoctorCookieOverrides(
+  session: SessionExport,
+  overrides: CookieOverrides,
+): SessionExport {
+  return applyCookieOverrides(session, overrides);
+}
+
 export interface DebugAuthRenewalDependencies {
   readonly env?: NodeJS.ProcessEnv;
   readonly runProbe?: () => Promise<CliAuthRenewalReport>;
@@ -169,7 +177,13 @@ export interface DebugAuthRenewalDependencies {
 async function prepareRuntimeDoctor(): Promise<PreparedRuntimeDoctor> {
   loadEnvironmentFile();
   const config = loadConfig();
-  const session = await loadSession(config.sessionFile);
+  const session = applyRuntimeDoctorCookieOverrides(
+    await loadSession(config.sessionFile),
+    {
+      ...(config.cookieHeader === undefined ? {} : { cookieHeader: config.cookieHeader }),
+      ...(config.ssoCookieHeader === undefined ? {} : { ssoCookieHeader: config.ssoCookieHeader }),
+    },
+  );
   if (session.accountId !== config.accountId) {
     throw new AppError("INVALID_CONFIG", "Configured account does not match the session export");
   }

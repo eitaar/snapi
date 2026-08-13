@@ -160,6 +160,7 @@ export async function refreshSnapchatSso(
     referer: capturedHeaders?.referer ?? "https://www.snapchat.com/",
   };
   if (attestation !== undefined) headers["snap-att"] = attestation;
+  if (session.auth.ssoScuid !== undefined) headers.scuid = session.auth.ssoScuid;
 
   let response: Response;
   try {

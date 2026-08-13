@@ -145,7 +145,7 @@ describe("refreshSnapchatSso", () => {
     const headers = new Headers(init?.headers);
     expect(headers.get("snap-att")).toBe("attestation-proof");
     expect(headers.get("cookie")).toBe("account=old");
-    expect(headers.has("scuid")).toBe(false);
+    expect(headers.get("scuid")).toBe(session().auth.ssoScuid);
     expect(refreshed.auth.httpToken).toBe(token);
     expect(refreshed.auth.gatewayToken).toBe(token);
     expect(refreshed.auth.tokenRefreshedAt).toBe("2026-08-11T01:02:03.000Z");
