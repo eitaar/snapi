@@ -1,3 +1,4 @@
+import { createHash } from "node:crypto";
 import { readFile as readFileFromDisk, realpath as realpathFromDisk } from "node:fs/promises";
 import { dirname, isAbsolute, relative, resolve, sep } from "node:path";
 import { loadConfig, loadEnvironmentFile, type AppConfig } from "../../config.js";
@@ -18,7 +19,7 @@ import {
   type SafeAuthBindingObservation,
 } from "../../diagnostics/auth-binding-types.js";
 import { AppError } from "../../errors.js";
-import { loadSession } from "../../session/loader.js";
+import { SealedSessionStore } from "../../session/sealed-store.js";
 import type { CliIo } from "../io.js";
 
 const contexts = new Set<AuthBindingContext>([
@@ -83,7 +84,7 @@ export interface DebugAuthBindingDependencies {
   readonly now?: () => Date;
   readonly env?: NodeJS.ProcessEnv;
   readonly realpath?: (path: string) => Promise<string>;
-  readonly loadSession?: typeof loadSession;
+  readonly readSealedSession?: (path: string) => Promise<Awaited<ReturnType<SealedSessionStore["read"]>>>;
   readonly gatewayProbe?: NodeAuthBindingProbeDependencies["gatewayProbe"];
   readonly http2Connect?: NodeAuthBindingProbeDependencies["http2Connect"];
   readonly runNodeAuthBindingProbe?: typeof runNodeAuthBindingProbe;
@@ -349,10 +350,12 @@ function parseRequest(value: unknown): NonNullable<NodeAuthBindingProbeInput["re
 async function configuredSession(
   config: AppConfig,
   dependencies: DebugAuthBindingDependencies,
-): Promise<Awaited<ReturnType<typeof loadSession>>> {
-  let session: Awaited<ReturnType<typeof loadSession>>;
+): Promise<Awaited<ReturnType<SealedSessionStore["read"]>>> {
+  let session: Awaited<ReturnType<SealedSessionStore["read"]>>;
   try {
-    session = await (dependencies.loadSession ?? loadSession)(config.sessionFile);
+    session = await (dependencies.readSealedSession ?? ((path: string) => new SealedSessionStore(path).read()))(
+      config.sessionFile,
+    );
   } catch {
     throw invalid("Unable to load configured session");
   }
@@ -400,11 +403,28 @@ async function runProbe(
   const session = await configuredSession(config, dependencies);
   const request = parseRequest(await readJson(requestPath, dependencies));
   const baseline = await readBytes(baselinePath, dependencies);
+  const baselineSummary = summarizeAuthBindingHar(baseline);
   const comparison = compareAuthBindingHarTokens(baseline, {
     httpToken: session.auth.httpToken,
     gatewayToken: session.auth.gatewayToken,
   });
   if (!comparison.messaging) throw invalid("Auth-binding baseline does not match the configured session");
+  let requestUrl: URL;
+  let requestBody: Uint8Array;
+  try {
+    requestUrl = new URL(request.url);
+    requestBody = Uint8Array.from(Buffer.from(request.bodyBase64, "base64"));
+  } catch {
+    throw invalid("Auth-binding request identity is invalid");
+  }
+  const requestBodySha256 = createHash("sha256").update(requestBody).digest("hex");
+  if (
+    baselineSummary.messagingEndpointPath !== requestUrl.pathname ||
+    baselineSummary.messagingBodyBytes !== requestBody.byteLength ||
+    baselineSummary.messagingBodySha256 !== requestBodySha256
+  ) {
+    throw invalid("Auth-binding request does not match the same-epoch baseline");
+  }
   const observation = await (dependencies.runNodeAuthBindingProbe ?? runNodeAuthBindingProbe)({
     authEpoch,
     context: args["--mode"],
@@ -421,6 +441,7 @@ async function runProbe(
     ...(dependencies.now === undefined ? {} : { now: dependencies.now }),
   });
   emit(io, outputFormat(env), "debug.auth-binding", observation);
+  if (observation.status === 429) return 6;
   return 0;
 }
 
@@ -458,6 +479,7 @@ async function runGateway(
     ...(dependencies.now === undefined ? {} : { now: dependencies.now }),
   });
   emit(io, outputFormat(env), "debug.auth-binding", observation);
+  if (observation.status === 429) return 6;
   return 0;
 }
 

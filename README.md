@@ -72,10 +72,14 @@ $env:SNAP_LIVE_TESTS='1'; node dist/cli/index.js debug gateway-handshake --json
 $env:SNAP_LIVE_TESTS='1'; node dist/cli/index.js debug auth-renewal --cli-only
 $env:SNAP_LIVE_TESTS='1'; node dist/cli/index.js debug auth-gap --request private/edge-delta-probe.json --session private/session.json --mode node-web-cookie --auth-epoch edge-capture-1
 node dist/cli/index.js debug auth-binding har --file private/fresh7.har --epoch fresh7
-node dist/cli/index.js debug auth-binding classify --observations tests/fixtures/auth-binding-observations.json
+node dist/cli/index.js debug auth-binding classify --observations private/auth-binding-observations.json
 $env:SNAP_LIVE_TESTS='1'; node dist/cli/index.js debug auth-binding probe --request private/edge-delta-probe.json --mode node-http2 --epoch fresh7
 $env:SNAP_LIVE_TESTS='1'; node dist/cli/index.js debug auth-binding gateway --mode node-gateway --epoch fresh7
 ```
+
+The tracked `tests/fixtures/auth-binding-observations.json` file is synthetic
+developer test data only; do not use it as live evidence. Put only sanitized
+observations from the current auth epoch under the ignored `private/` directory.
 
 `session check` performs shape, account, lock, asset hash, module, and WASM
 checks without authenticated network traffic. `session refresh-har` extracts

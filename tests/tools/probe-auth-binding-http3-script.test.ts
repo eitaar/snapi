@@ -31,9 +31,10 @@ describe('probe-auth-binding-http3 PowerShell contract', () => {
     expect(script).toContain('DeltaSync');
     expect(script).toContain('BatchDeltaSync');
     expect(script).toContain('GetGroups');
-    expect(script).toContain(
-      'https://web.snapchat.com/web/version.json?version=8dd50222',
-    );
+    expect(script).toContain("'/web/version.json'");
+    expect(script).toContain("'?version=8dd50222'");
+    expect(script).toContain('$buildPinned');
+    expect(script).not.toContain('$FixedVersionUrl');
     expect(script).toContain('messagingcoreservice.MessagingCoreService');
     expect(script).toContain('response.Version');
     expect(script).not.toContain('TryGetProperty');
@@ -53,13 +54,15 @@ describe('probe-auth-binding-http3 PowerShell contract', () => {
       'context',
       'operation',
       'endpointPath',
-      'status',
+      'startedAt',
       'protocol',
-      'requestBodyBytes',
-      'requestBodySha256',
+      'tokenEqualsEpochBaseline',
       'safeHeaderNames',
-      'transportError',
     ]);
+    expect(script).toContain('$result.status');
+    expect(script).toContain('$result.requestBodyBytes');
+    expect(script).toContain('$result.requestBodySha256');
+    expect(script).toContain('$result.transportError');
     expect(script).toContain('safeHeaderNames');
     expect(script).toContain('requestBodySha256');
     expect(script).toContain('transportError');
@@ -96,12 +99,15 @@ describe('probe-auth-binding-http3 PowerShell contract', () => {
     expect(script).toContain('$AllowedCapturedHeaderNames');
     expect(script).toContain('$StaticHeaders');
     expect(script).toContain("if ($headerName -in $AllowedCapturedHeaderNames)");
+    expect(script).toContain("if ([string]::IsNullOrEmpty($forwardedHeaders['authorization']))");
+    expect(script).not.toContain("-or\n        [string]::IsNullOrEmpty($forwardedHeaders['cookie'])");
     expect(script).toContain("$safeHeaderNames = @($forwardedHeaders.Keys) + @($StaticHeaders.Keys)");
     expect(script).toContain('postData');
     expect(script).toContain("'content-type'");
     expect(script).not.toMatch(
       /(?:Get-Clipboard|Get-ItemProperty|Login Data|IndexedDB|Local State|WebSocket)/i,
     );
+    expect(script.match(/\$client\.Send\(/g) ?? []).toHaveLength(1);
   });
 
   it('has exactly two manually parsed named options and rejects malformed invocations offline', () => {
@@ -146,7 +152,7 @@ describe('probe-auth-binding-http3 PowerShell contract', () => {
       expect(JSON.parse(outputLine)).toMatchObject({
         context: 'dotnet-http3',
         operation: 'messaging-read',
-        transportError: 'invalid-input',
+        transportError: 'other',
       });
     }
 
@@ -158,7 +164,7 @@ describe('probe-auth-binding-http3 PowerShell contract', () => {
     expect(accepted.status).toBe(1);
     expect(accepted.stderr).toBe('');
     expect(JSON.parse(accepted.stdout.trim())).toMatchObject({
-      transportError: 'invalid-har',
+      transportError: 'other',
     });
   });
 });

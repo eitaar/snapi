@@ -66,6 +66,7 @@ export interface AuthBindingHarSummary {
   readonly messagingRequestHeaderNames: readonly string[];
   readonly gatewayProtocols: readonly string[];
   readonly messagingProtocols: readonly string[];
+  readonly messagingEndpointPath?: string;
   readonly gatewayStartedAt?: string;
   readonly messagingStartedAt?: string;
   readonly messagingBodyBytes?: number;
@@ -307,6 +308,7 @@ export function summarizeAuthBindingHar(input: string | Uint8Array): AuthBinding
     messagingRequestHeaderNames: headerNames(messaging.request.headers, SAFE_MESSAGING_REQUEST_HEADERS),
     gatewayProtocols: [selectedGatewayProtocol(gateway)!],
     messagingProtocols: safeProtocols(messages),
+    ...(urlOf(messaging)?.pathname === undefined ? {} : { messagingEndpointPath: urlOf(messaging)!.pathname }),
     ...(canonicalUtcIso(gateway.startedDateTime) === undefined
       ? {}
       : { gatewayStartedAt: canonicalUtcIso(gateway.startedDateTime)! }),

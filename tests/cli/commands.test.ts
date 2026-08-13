@@ -533,7 +533,7 @@ describe("CLI commands", () => {
     const output = io();
     const readFile = vi.fn();
     const fetch = vi.fn();
-    const loadSession = vi.fn();
+    const readSealedSession = vi.fn();
     const originalLoadEnvFile = process.loadEnvFile;
     const loadEnvFile = vi.fn();
     const originalLiveTests = process.env.SNAP_LIVE_TESTS;
@@ -543,13 +543,13 @@ describe("CLI commands", () => {
     try {
       const code = await main([
         "debug", "auth-binding", "probe", "--request", "private/request.json", "--mode", "node-http1", "--epoch", "epoch-a",
-      ], output.value, { readFile, fetch, debugAuthBinding: { loadSession } });
+      ], output.value, { readFile, fetch, debugAuthBinding: { readSealedSession } });
 
       expect(code).toBe(3);
       expect(output.stderr.join("\n")).toContain("INVALID_CONFIG");
       expect(readFile).not.toHaveBeenCalled();
       expect(fetch).not.toHaveBeenCalled();
-      expect(loadSession).not.toHaveBeenCalled();
+      expect(readSealedSession).not.toHaveBeenCalled();
       expect(loadEnvFile).not.toHaveBeenCalled();
     } finally {
       process.loadEnvFile = originalLoadEnvFile;
@@ -578,19 +578,19 @@ describe("CLI commands", () => {
       const output = io();
       const readFile = vi.fn();
       const fetch = vi.fn();
-      const loadSession = vi.fn();
+      const readSealedSession = vi.fn();
       const code = await main(argv, output.value, {
         readFile,
         fetch,
         env,
-        debugAuthBinding: { loadSession },
+        debugAuthBinding: { readSealedSession },
       });
       const emitted = `${output.stdout.join("\n")}\n${output.stderr.join("\n")}`;
 
       expect(code).toBe(3);
       expect(readFile).not.toHaveBeenCalled();
       expect(fetch).not.toHaveBeenCalled();
-      expect(loadSession).not.toHaveBeenCalled();
+      expect(readSealedSession).not.toHaveBeenCalled();
       expect(emitted).not.toContain(secret);
     }
   });
@@ -637,6 +637,34 @@ describe("CLI commands", () => {
       conclusion: { kind: "tls-client-bound", operation: "messaging-read" },
     });
     expect(readFile).toHaveBeenCalledOnce();
+  });
+
+  it("accepts the sanitized HTTP/3 probe schema through the real classifier CLI", async () => {
+    const output = io();
+    const observation = {
+      authEpoch: "fresh-http3",
+      context: "dotnet-http3",
+      operation: "messaging-read",
+      endpointPath: "/messagingcoreservice.MessagingCoreService/DeltaSync",
+      startedAt: "2026-08-13T01:00:02.000Z",
+      status: 401,
+      protocol: "h3",
+      requestBodyBytes: 3,
+      requestBodySha256: "a".repeat(64),
+      safeHeaderNames: ["authorization", "content-type", "x-grpc-web"],
+      tokenEqualsEpochBaseline: true,
+    };
+    const readFile = vi.fn(async () => new TextEncoder().encode(JSON.stringify([observation])));
+
+    const code = await main([
+      "debug", "auth-binding", "classify", "--observations", "private/http3-observation.json",
+    ], output.value, { readFile, env: { SNAP_OUTPUT: "json" } });
+
+    expect(code).toBe(0);
+    expect(JSON.parse(output.stdout[0]!)).toMatchObject({
+      type: "debug.auth-binding",
+      conclusion: { kind: "insufficient-evidence", operation: "messaging-read" },
+    });
   });
 
   it.each([
@@ -797,7 +825,7 @@ describe("CLI commands", () => {
       headerNames: [],
       durationMs: 1,
     }));
-    const loadSession = vi.fn(async () => session as never);
+    const readSealedSession = vi.fn(async () => session as never);
     const dependencies = {
       readFile,
       fetch,
@@ -810,7 +838,7 @@ describe("CLI commands", () => {
         SNAP_BUILD_ID: "8dd50222",
         SNAP_OUTPUT: "json",
       },
-      debugAuthBinding: { loadSession, gatewayProbe, realpath: async (path: string) => path },
+      debugAuthBinding: { readSealedSession, gatewayProbe, realpath: async (path: string) => path },
     };
 
     await expect(main([
@@ -829,7 +857,7 @@ describe("CLI commands", () => {
 
     expect(fetch).toHaveBeenCalledOnce();
     expect(gatewayProbe).toHaveBeenCalledOnce();
-    expect(loadSession).toHaveBeenCalledTimes(2);
+    expect(readSealedSession).toHaveBeenCalledTimes(2);
     expect(output.stdout.map((line) => JSON.parse(line))).toEqual([
       expect.objectContaining({ tokenEqualsEpochBaseline: true }),
       expect.objectContaining({ tokenEqualsEpochBaseline: true }),
@@ -860,7 +888,7 @@ describe("CLI commands", () => {
       path.includes("baseline") ? authBindingBaselineHar("b".repeat(64)) : request,
     )));
     const fetch = vi.fn();
-    const loadSession = vi.fn(async () => session as never);
+    const readSealedSession = vi.fn(async () => session as never);
 
     const code = await main([
       "debug", "auth-binding", "probe",
@@ -879,11 +907,11 @@ describe("CLI commands", () => {
         SNAP_BUILD_ID: "8dd50222",
         SNAP_OUTPUT: "json",
       },
-      debugAuthBinding: { loadSession, realpath: async (path: string) => path },
+      debugAuthBinding: { readSealedSession, realpath: async (path: string) => path },
     });
 
     expect(code).toBe(3);
-    expect(loadSession).toHaveBeenCalledOnce();
+    expect(readSealedSession).toHaveBeenCalledOnce();
     expect(readFile).toHaveBeenCalledTimes(2);
     expect(fetch).not.toHaveBeenCalled();
     expect(output.stdout).toEqual([]);
