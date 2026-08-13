@@ -23,3 +23,38 @@
 | wasm_instantiated | passed | 0 |  |  |
 | modules_resolved | passed | 0 |  |  |
 | content_envelope_created | failed | 1 | CRYPTO_RUNTIME_FAILED | Official messaging Worker call failed |
+
+## Auth-binding investigation (sanitized)
+
+The existing operator capture private/fresh7.har was summarized offline on
+2026-08-14 with epoch label fresh7. The parser accepted the pinned
+8dd50222 marker, Gateway/Messaging token equality was true, and no
+credential value was emitted.
+
+| Context | Epoch | Operation | Endpoint | Protocol | Status | Body bytes | Body SHA-256 | Token equals epoch baseline | Conclusion |
+|---|---|---|---|---|---:|---:|---|---|---|
+| brave-natural | fresh7 | messaging-read | /messagingcoreservice.MessagingCoreService/DeltaSync | h3 | 200 | 65 | eeef387cb18fbaf8d7819dc8afa02334e4359eed260a7dd100b146ebed06b6cc | true | browser baseline |
+| brave-natural | fresh7 | gateway-handshake | /snapchat.gateway.Gateway/WebSocketConnect | websocket | 101 | — | — | true | browser baseline |
+| node-http1 | fresh7 | messaging-read | /messagingcoreservice.MessagingCoreService/DeltaSync | http/1.1 | 401 | 65 | eeef387cb18fbaf8d7819dc8afa02334e4359eed260a7dd100b146ebed06b6cc | true | rejected |
+| node-http2 | fresh7 | messaging-read | /messagingcoreservice.MessagingCoreService/DeltaSync | h2 | 401 | 65 | eeef387cb18fbaf8d7819dc8afa02334e4359eed260a7dd100b146ebed06b6cc | true | rejected |
+| dotnet-http3 | fresh7 | messaging-read | /messagingcoreservice.MessagingCoreService/DeltaSync | h3 | 401 | 65 | same as baseline | true | rejected |
+| node-gateway | fresh7 | gateway-handshake | /snapchat.gateway.Gateway/WebSocketConnect | websocket | 401 | — | — | true | rejected |
+
+The browser baseline contained one successful Gateway 101, five
+allowlisted read-only Messaging 200 entries, ten Messaging write-path
+entries counted as a red flag, Gateway origin https://www.snapchat.com, no
+Gateway Cookie/Authorization header, and Messaging protocol h3. The write
+entries were not used as success evidence.
+
+Reload, browser-process restart, --disable-quic h2 capture, page replay,
+Worker replay, and bootstrap perturbation were not run in this pass because
+no new operator-exported HARs were supplied. Therefore the narrowest
+supported live conclusion is insufficient-evidence: the results establish
+that the captured Browser request succeeds while Node HTTP/1.1, Node h2,
+Node Gateway, and the previously recorded .NET h3 replay fail, but they do
+not isolate token freshness, connection instance, browser process/profile,
+QUIC, TLS/client identity, browser principal, or bootstrap sequence.
+
+No conclusion here claims a DBSC key, attestation mechanism, TLS fingerprint,
+or server-side registration detail. The diagnostic layer does not make Chat,
+Snap, Gateway receive, or Gateway reconnect work by itself.

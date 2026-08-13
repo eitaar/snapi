@@ -71,6 +71,10 @@ node dist/cli/index.js debug doctor --runtime
 $env:SNAP_LIVE_TESTS='1'; node dist/cli/index.js debug gateway-handshake --json
 $env:SNAP_LIVE_TESTS='1'; node dist/cli/index.js debug auth-renewal --cli-only
 $env:SNAP_LIVE_TESTS='1'; node dist/cli/index.js debug auth-gap --request private/edge-delta-probe.json --session private/session.json --mode node-web-cookie --auth-epoch edge-capture-1
+node dist/cli/index.js debug auth-binding har --file private/fresh7.har --epoch fresh7
+node dist/cli/index.js debug auth-binding classify --observations tests/fixtures/auth-binding-observations.json
+$env:SNAP_LIVE_TESTS='1'; node dist/cli/index.js debug auth-binding probe --request private/edge-delta-probe.json --mode node-http2 --epoch fresh7
+$env:SNAP_LIVE_TESTS='1'; node dist/cli/index.js debug auth-binding gateway --mode node-gateway --epoch fresh7
 ```
 
 `session check` performs shape, account, lock, asset hash, module, and WASM
@@ -178,6 +182,14 @@ Upgrade probe. It reports only the HTTP status, selected protocol category,
 response header names, timing, and a safe classification. A `401` or `403`
 means the shared token was rejected in the CLI's Gateway connection context;
 the CLI does not attempt a browser-context bypass.
+
+debug auth-binding har and debug auth-binding classify are offline sanitized
+diagnostics. The HAR command accepts only files inside the configured private
+directory and returns counts, fixed-safe metadata, protocol labels, and body
+length/hash; it never emits credentials. The probe and gateway variants
+require SNAP_LIVE_TESTS=1, perform at most one allowlisted read-only operation,
+and return only a bounded observation. They do not automate login, extract
+browser keys, or modify Chat/Snap/Gateway production paths.
 
 See [session export format](docs/session-export-format.md),
 [security boundaries](docs/security-boundaries.md), and the
