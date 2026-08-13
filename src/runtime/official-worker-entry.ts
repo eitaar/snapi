@@ -15,6 +15,12 @@ import {
   MAX_INCOMING_MEDIA_LAYERS,
 } from "./incoming-media-download.js";
 import { installOfficialWebSocket } from "./official-websocket.js";
+import {
+  describeOfficialDuplexCause,
+  instrumentOfficialDuplexErrors,
+  registerOfficialMainAssetWithWorkerExports,
+  waitForOfficialBootstrapRegistration,
+} from "./official-duplex-diagnostics.js";
 
 if (parentPort === null) throw new Error("Official messaging Worker host requires a parent port");
 const data = workerData as {
@@ -54,6 +60,10 @@ function createStorage(): Storage {
 
 const target = globalThis as unknown as Record<PropertyKey, unknown>;
 Object.defineProperties(target, {
+  __officialDescribeDuplexCause: {
+    value: describeOfficialDuplexCause,
+    configurable: true,
+  },
   self: { value: globalThis, configurable: true, writable: true },
   window: { value: globalThis, configurable: true, writable: true },
   WorkerGlobalScope: { value: Object, configurable: true, writable: true },
@@ -420,6 +430,7 @@ parentPort!.on("message", (message: unknown) => {
 });
 
 let bootstrapSource = readFileSync(bootstrapPath, "utf8");
+bootstrapSource = instrumentOfficialDuplexErrors(bootstrapSource);
 const runtimeHelperBridge = "s.r=e=>{typeof Symbol!==\"undefined\"&&Symbol.toStringTag&&Object.defineProperty(e,Symbol.toStringTag,{value:\"Module\"}),Object.defineProperty(e,\"__esModule\",{value:!0})},s.nmd=e=>(e.paths=[],e.children||(e.children=[]),e),s.t=(e,t)=>{if(1&t&&(e=s(e)),8&t)return e;if(\"object\"==typeof e&&e){if(4&t&&e.__esModule)return e;if(16&t&&\"function\"==typeof e.then)return e}const n=Object.create(null);s.r(n);const r={};for(let o=2&t&&e;o&&\"object\"==typeof o&&!Object.prototype.hasOwnProperty.call(o,\"__esModule\");o=Object.getPrototypeOf(o)){const e=o;for(const t of Object.getOwnPropertyNames(e))r[t]=()=>e[t]}r.default=()=>e,s.d(n,r);return n},s.g=globalThis";
 bootstrapSource = bootstrapSource.replace(
   "t=s.x,s.x=()=>",
@@ -437,8 +448,15 @@ const mainAssetSource = readFileSync(mainAssetPath, "utf8");
 const mainRuntimeSuffix = ",e=>{e(e.s=28420)}";
 const mainRuntimeIndex = mainAssetSource.lastIndexOf(mainRuntimeSuffix);
 if (mainRuntimeIndex < 0) throw new Error("Pinned main asset does not match the expected registration shape");
-runInThisContext(
-  `${mainAssetSource.slice(0, mainRuntimeIndex)}${mainAssetSource.slice(mainRuntimeIndex + mainRuntimeSuffix.length)}`,
-  { filename: mainAssetPath },
-);
+const webpackRuntime = officialWebpackRequire() as ((id: string | number) => unknown) & {
+  readonly m?: Record<string, unknown>;
+};
+if (webpackRuntime.m === undefined) throw new Error("Official Webpack module registry is unavailable");
+registerOfficialMainAssetWithWorkerExports(webpackRuntime.m, ["61056", "20606", "33326"], () => {
+  runInThisContext(
+    `${mainAssetSource.slice(0, mainRuntimeIndex)}${mainAssetSource.slice(mainRuntimeIndex + mainRuntimeSuffix.length)}`,
+    { filename: mainAssetPath },
+  );
+});
+await waitForOfficialBootstrapRegistration();
 setImmediate(() => parentPort!.postMessage({ __officialHostReady: true }));

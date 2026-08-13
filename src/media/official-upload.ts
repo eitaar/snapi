@@ -46,7 +46,7 @@ export async function uploadOfficialPhotoContent(
   const encrypted = await dependencies.builder.encryptMedia(reference);
   const locationResult = await dependencies.grpc.unary(
     "snapchat.content.v2.MediaDeliveryService",
-    "GetUploadLocations",
+    "getUploadLocations",
     encodeGetUploadLocationsRequest(),
     {
       timeoutMs: 30_000,

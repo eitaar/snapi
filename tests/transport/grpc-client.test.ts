@@ -70,7 +70,7 @@ describe("GrpcWebClient", () => {
     expect(headers.get("content-type")).toBe("application/grpc-web+proto");
     expect(headers.get("mcs-cof-ids-bin")).toBe("cof");
     expect(headers.has("not-allowed")).toBe(false);
-    expect(headers.has("cookie")).toBe(false);
+    expect(headers.get("cookie")).toBe("secret-cookie");
     expect(new Uint8Array(init?.body as ArrayBuffer)).toEqual(encodeDataFrame(new Uint8Array([1, 2, 3])));
   });
 

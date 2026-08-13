@@ -115,7 +115,8 @@ function requireAdapter(): BuildAdapter {
 
 function canContinueWithoutMessaging(error: unknown): boolean {
   return error instanceof AppError && (
-    error.details.safeMessage === "failed to create duplex client" ||
+    (typeof error.details.safeMessage === "string" &&
+      error.details.safeMessage.startsWith("failed to create duplex client")) ||
     error.message === "Official messaging Worker call failed"
   );
 }

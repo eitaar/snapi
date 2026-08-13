@@ -8,6 +8,7 @@ const ALLOWED_REQUEST_HEADERS = new Set([
   "x-snap-client-user-agent",
   "x-user-agent",
 ]);
+const SNAPCHAT_WEB_ORIGIN = "https://web.snapchat.com";
 
 export type RequestReplayPolicy = "read-only" | "idempotent" | "ambiguous-send";
 
@@ -103,6 +104,9 @@ export class GrpcWebClient {
         authorization: `Bearer ${auth.httpToken}`,
         "content-type": "application/grpc-web+proto",
       });
+      if (new URL(url).origin === SNAPCHAT_WEB_ORIGIN && auth.cookieHeader.trim() !== "") {
+        headers.set("cookie", auth.cookieHeader);
+      }
       copyAllowed(headers, auth.headers);
       copyAllowed(headers, options.headers);
 

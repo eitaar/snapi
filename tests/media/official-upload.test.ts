@@ -44,7 +44,7 @@ describe("official photo upload", () => {
     expect(events).toEqual(["encrypt", "location", "put", "finalize"]);
     expect(grpc.unary).toHaveBeenCalledWith(
       "snapchat.content.v2.MediaDeliveryService",
-      "GetUploadLocations",
+      "getUploadLocations",
       expect.any(Uint8Array),
       {
         timeoutMs: 30_000,
