@@ -1,7 +1,8 @@
 import { Worker, type TransferListItem } from "node:worker_threads";
 import { AppError } from "../errors.js";
 import type { SessionExport } from "../session/types.js";
-import type { FriendSnapshot } from "../friends/types.js";
+import { sanitizeEasyFriendSnapshot } from "../friends/snapshot.js";
+import type { EasyFriendSnapshot, FriendSnapshot } from "../friends/types.js";
 import type {
   AuthRefreshResult,
   ChatInput,
@@ -171,6 +172,10 @@ export class ContentRuntimeClient {
 
   syncFriends(): Promise<FriendSnapshot> {
     return this.call({ method: "syncFriends" });
+  }
+
+  async syncFriendsForSending(): Promise<EasyFriendSnapshot> {
+    return sanitizeEasyFriendSnapshot(await this.call({ method: "syncFriendsForSending" }));
   }
 
   async shutdown(): Promise<void> {

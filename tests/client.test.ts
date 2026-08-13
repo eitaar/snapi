@@ -49,6 +49,7 @@ function components(events: string[]): SnapchatClientComponents {
         friends: [],
         incomingRequests: [],
       })),
+      listEasy: vi.fn(async () => ({ friends: [] })),
     },
     gateway: {
       connect: vi.fn(async () => undefined),
@@ -106,6 +107,20 @@ describe("SnapchatClient", () => {
     const client = await SnapchatClient.create(config, { compose: async () => state });
     await expect(client.listFriends()).resolves.toMatchObject({ status: "success" });
     expect(state.friends.list).toHaveBeenCalledOnce();
+    await client.close();
+  });
+
+  it("delegates send-ready easy friend listing", async () => {
+    const state = components([]);
+    state.friends.listEasy = vi.fn(async () => ({
+      friends: [{ recipientId: "recipient", conversationId: "conversation" }],
+    }));
+    const client = await SnapchatClient.create(config, { compose: async () => state });
+
+    await expect(client.listEasyFriends()).resolves.toEqual({
+      friends: [{ recipientId: "recipient", conversationId: "conversation" }],
+    });
+    expect(state.friends.listEasy).toHaveBeenCalledOnce();
     await client.close();
   });
 

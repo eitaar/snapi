@@ -3,6 +3,8 @@ import type {
   FriendDirection,
   FriendRecord,
   FriendRelationshipStatus,
+  EasyFriendRecord,
+  EasyFriendSnapshot,
   FriendSnapshot,
 } from "./types.js";
 
@@ -85,6 +87,31 @@ function arrayAt(value: unknown, path: string): readonly FriendRecord[] {
   return value.map((entry, index) => recordAt(entry, `${path}[${index}]`));
 }
 
+function easyRecordAt(value: unknown, path: string): EasyFriendRecord {
+  if (value === null || typeof value !== "object" || Array.isArray(value)) {
+    throw new AppError("INVALID_CONFIG", `Easy friend record must be an object at ${path}`);
+  }
+  const record = value as Record<string, unknown>;
+  if (typeof record.recipientId !== "string" || record.recipientId.trim() === "") {
+    throw new AppError("INVALID_CONFIG", `Easy friend record is missing recipientId at ${path}`);
+  }
+  if (typeof record.conversationId !== "string" || record.conversationId.trim() === "") {
+    throw new AppError("INVALID_CONFIG", `Easy friend record is missing conversationId at ${path}`);
+  }
+  const username = typeof record.username === "string" && record.username.trim() !== ""
+    ? record.username
+    : undefined;
+  const displayName = typeof record.displayName === "string" && record.displayName.trim() !== ""
+    ? record.displayName
+    : undefined;
+  return {
+    recipientId: record.recipientId,
+    conversationId: record.conversationId,
+    ...(username === undefined ? {} : { username }),
+    ...(displayName === undefined ? {} : { displayName }),
+  };
+}
+
 export function sanitizeFriendSnapshot(value: unknown): FriendSnapshot {
   if (value === null || typeof value !== "object" || Array.isArray(value)) {
     throw new AppError("INVALID_CONFIG", "Friend snapshot must be an object");
@@ -101,6 +128,38 @@ export function sanitizeFriendSnapshot(value: unknown): FriendSnapshot {
     status,
     friends: arrayAt(snapshot.friends, "friends"),
     incomingRequests: arrayAt(snapshot.incomingRequests, "incomingRequests"),
+  };
+}
+
+export function sanitizeEasyFriendSnapshot(value: unknown): EasyFriendSnapshot {
+  if (value === null || typeof value !== "object" || Array.isArray(value)) {
+    throw new AppError("INVALID_CONFIG", "Easy friend snapshot must be an object");
+  }
+  const snapshot = value as Record<string, unknown>;
+  if (!Array.isArray(snapshot.friends)) {
+    throw new AppError("INVALID_CONFIG", "Easy friend snapshot field must be an array");
+  }
+  return {
+    friends: snapshot.friends.map((entry, index) => easyRecordAt(entry, `friends[${index}]`)),
+  };
+}
+
+export function buildEasyFriendSnapshot(
+  snapshot: FriendSnapshot,
+  conversationIds: ReadonlyMap<string, string>,
+): EasyFriendSnapshot {
+  return {
+    friends: snapshot.friends.flatMap((friend) => {
+      if (friend.status !== "friend") return [];
+      const conversationId = conversationIds.get(friend.userId);
+      if (conversationId === undefined || conversationId.trim() === "") return [];
+      return [{
+        recipientId: friend.userId,
+        conversationId,
+        ...(friend.username === undefined ? {} : { username: friend.username }),
+        ...(friend.displayName === undefined ? {} : { displayName: friend.displayName }),
+      }];
+    }),
   };
 }
 
@@ -128,5 +187,30 @@ export function findExactFriend(query: string, snapshot: FriendSnapshot): Friend
   }
   throw new AppError("RECIPIENT_NOT_FOUND", "Friend query is ambiguous", {
     candidates: matches.map(candidate),
+  });
+}
+
+export function findExactEasyFriend(
+  query: string,
+  snapshot: EasyFriendSnapshot,
+): EasyFriendRecord {
+  const exactId = snapshot.friends.filter(({ recipientId }) => recipientId === query);
+  if (exactId.length === 1) return exactId[0]!;
+
+  const normalized = query.toLocaleLowerCase("en-US");
+  const matches = snapshot.friends.filter(({ username, displayName }) =>
+    username?.toLocaleLowerCase("en-US") === normalized ||
+    displayName?.toLocaleLowerCase("en-US") === normalized,
+  );
+  if (matches.length === 1) return matches[0]!;
+  if (matches.length === 0) {
+    throw new AppError("RECIPIENT_NOT_FOUND", "Exact send-ready friend match was not found");
+  }
+  throw new AppError("RECIPIENT_NOT_FOUND", "Easy friend query is ambiguous", {
+    candidates: matches.map(({ recipientId, username, displayName }) => ({
+      recipientId,
+      ...(username === undefined ? {} : { username }),
+      ...(displayName === undefined ? {} : { displayName }),
+    })),
   });
 }

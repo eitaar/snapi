@@ -100,6 +100,18 @@ describe("ContentRuntimeClient", () => {
     await runtime.shutdown();
   });
 
+  it("requests a send-ready easy friend snapshot from the runtime Worker", async () => {
+    const runtime = client();
+    await runtime.initialize(session());
+    await expect(runtime.syncFriendsForSending()).resolves.toEqual({
+      friends: [{
+        recipientId: "recipient-1",
+        conversationId: "conversation-1",
+      }],
+    });
+    await runtime.shutdown();
+  });
+
   it("propagates refreshed auth to the existing runtime before the next read-only operation", async () => {
     const runtime = client();
     await runtime.initialize(session());

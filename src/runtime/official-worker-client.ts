@@ -258,6 +258,19 @@ function uuidString(value: unknown): string | undefined {
   return `${hex.slice(0, 8)}-${hex.slice(8, 12)}-${hex.slice(12, 16)}-${hex.slice(16, 20)}-${hex.slice(20)}`;
 }
 
+function normalizeConversationIds(value: unknown): ReadonlyMap<string, string> {
+  if (!Array.isArray(value)) return new Map();
+  const result = new Map<string, string>();
+  for (const entry of value) {
+    if (entry === null || typeof entry !== "object" || Array.isArray(entry)) continue;
+    const record = entry as Record<string, unknown>;
+    const userId = uuidString(record.userId);
+    const conversationId = uuidString(record.conversationId);
+    if (userId !== undefined && conversationId !== undefined) result.set(userId, conversationId);
+  }
+  return result;
+}
+
 function byteValue(value: string): Uint8Array {
   return new Uint8Array(Buffer.from(value, "base64"));
 }
@@ -437,6 +450,7 @@ export class OfficialWorkerClient {
   private closed = false;
 
   private exportMessagingStateSnapshot: (() => OfficialMessagingStateExport) | undefined;
+  private conversationManager: OfficialRemote | undefined;
   private feedManager: OfficialRemote | undefined;
   private accountId: string | undefined;
   private requestAuthState = {
@@ -590,6 +604,7 @@ export class OfficialWorkerClient {
     );
     const messagingSession = await this.createMessagingSession(bundle.args);
     const conversationManager = await messagingSession.callRemote(["getConversationManager"]);
+    this.conversationManager = conversationManager;
     this.feedManager = await messagingSession.callRemote(["getFeedManager"]);
     this.exportMessagingStateSnapshot = bundle.exportState;
     return conversationManager;
@@ -619,6 +634,34 @@ export class OfficialWorkerClient {
     return syncOfficialFriends(this, this.accountId);
   }
 
+  async getOneOnOneConversationIds(userIds: readonly string[]): Promise<ReadonlyMap<string, string>> {
+    if (this.conversationManager === undefined) {
+      throw new AppError(
+        "SESSION_REEXPORT_REQUIRED",
+        "One-to-one conversation lookup requires the messaging session state",
+      );
+    }
+    if (userIds.length === 0) return new Map();
+    return new Promise<ReadonlyMap<string, string>>((resolve, reject) => {
+      let settled = false;
+      const finish = (operation: () => void) => {
+        if (settled) return;
+        settled = true;
+        operation();
+      };
+      void this.conversationManager!.call<void>(["getOneOnOneConversationIds"], [
+        userIds.map((userId) => uuidValue(userId)),
+        exposeOfficial({
+          onSuccess: (value: unknown) => finish(() => resolve(normalizeConversationIds(value))),
+          onError: () => finish(() => reject(new AppError(
+            "CRYPTO_RUNTIME_FAILED",
+            "Official one-to-one conversation lookup failed",
+          ))),
+        }),
+      ]).catch((error: unknown) => finish(() => reject(error)));
+    });
+  }
+
   exportMessagingState(): OfficialMessagingStateExport {
     if (this.exportMessagingStateSnapshot === undefined) {
       throw new AppError(
@@ -639,6 +682,7 @@ export class OfficialWorkerClient {
     for (const port of this.remotePorts) port.close();
     this.remotePorts.clear();
     this.exportMessagingStateSnapshot = undefined;
+    this.conversationManager = undefined;
     this.feedManager = undefined;
     this.accountId = undefined;
     this.requestAuthState = { httpToken: "", gatewayToken: "", mcsCofSequenceIds: "" };

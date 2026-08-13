@@ -14,6 +14,7 @@ import { createBuild8dd50222Adapter } from "./builds/8dd50222.js";
 import { exportIndexedDbSnapshot, importIndexedDbSnapshot } from "./indexeddb-snapshot.js";
 import type { RuntimeRequest, RuntimeResponse, SerializedAppError } from "./protocol.js";
 import type { ChatMessage, CryptoStateExport, IncomingSnap, IncomingSnapMedia } from "./content-types.js";
+import { buildEasyFriendSnapshot } from "../friends/snapshot.js";
 import { captureOfficialChatEnvelope } from "./official-chat-capture.js";
 import { OfficialWorkerClient, exposeOfficial, type OfficialRemote } from "./official-worker-client.js";
 import { OfficialPhotoContentBuilder, type OfficialPhotoMessageContent } from "./official-photo-content.js";
@@ -361,6 +362,18 @@ async function dispatch(request: RuntimeRequest): Promise<unknown> {
         throw new AppError("CRYPTO_RUNTIME_FAILED", "Content runtime is not initialized");
       }
       return officialRuntime.syncFriends();
+    case "syncFriendsForSending":
+      if (officialRuntime === undefined) {
+        throw new AppError("CRYPTO_RUNTIME_FAILED", "Content runtime is not initialized");
+      }
+      {
+        const snapshot = await officialRuntime.syncFriends();
+        const friendIds = snapshot.friends
+          .filter((friend) => friend.status === "friend")
+          .map((friend) => friend.userId);
+        const conversationIds = await officialRuntime.getOneOnOneConversationIds(friendIds);
+        return buildEasyFriendSnapshot(snapshot, conversationIds);
+      }
     case "drainChatMessages":
       if (chatSyncError !== undefined) {
         const error = chatSyncError;

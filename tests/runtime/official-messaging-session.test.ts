@@ -142,6 +142,24 @@ describe("official messaging session", () => {
     }
   });
 
+  it("resolves one-to-one conversation IDs for user IDs through the official manager", async () => {
+    const client = new OfficialWorkerClient({
+      assetDir: ".",
+      workerUrl: new URL("../fixtures/official-session-contract-worker.mjs", import.meta.url),
+    });
+    try {
+      await client.initializeWasm(session());
+      await client.initializeMessagingSession(session());
+      await expect(client.getOneOnOneConversationIds([
+        "11111111-1111-4111-8111-111111111111",
+      ])).resolves.toEqual(new Map([
+        ["11111111-1111-4111-8111-111111111111", "22222222-2222-4222-8222-222222222222"],
+      ]));
+    } finally {
+      await client.shutdown();
+    }
+  });
+
   it("restores the pre-login temporary identity for first-session initialization", async () => {
     const client = new OfficialWorkerClient({
       assetDir: ".",

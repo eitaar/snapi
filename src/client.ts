@@ -8,7 +8,7 @@ import { AppError } from "./errors.js";
 import { GatewayClient } from "./gateway/client.js";
 import type { GatewayEvent, GatewayStatus } from "./gateway/events.js";
 import { FriendsClient } from "./friends/client.js";
-import type { FriendSnapshot } from "./friends/types.js";
+import type { EasyFriendSnapshot, FriendSnapshot } from "./friends/types.js";
 import { MessagingClient, type SendResult, type SendTextInput } from "./messaging/client.js";
 import { MediaClient, type SendPhotoSnapInput } from "./media/client.js";
 import { ContentRuntimeClient } from "./runtime/worker-client.js";
@@ -44,6 +44,7 @@ interface RuntimeLike {
 
 interface FriendsLike {
   list(): Promise<FriendSnapshot>;
+  listEasy(): Promise<EasyFriendSnapshot>;
 }
 
 export interface SnapchatClientComponents {
@@ -147,6 +148,17 @@ async function composeDefault(config: AppConfig): Promise<SnapchatClientComponen
             return initializedRuntime.syncFriends();
           }
         },
+        syncFriendsForSending: async () => {
+          try {
+            return await initializedRuntime.syncFriendsForSending();
+          } catch (error) {
+            if (!(error instanceof AppError) || error.code !== "SESSION_EXPIRED") {
+              throw error;
+            }
+            await auth.refreshOnce({ kind: "expired" });
+            return initializedRuntime.syncFriendsForSending();
+          }
+        },
       },
     });
     const gateway = new GatewayClient({ auth });
@@ -191,6 +203,11 @@ export class SnapchatClient {
   listFriends(): Promise<FriendSnapshot> {
     if (this.closed) return Promise.reject(new AppError("CRYPTO_RUNTIME_FAILED", "Snapchat client is closed"));
     return this.components.friends.list();
+  }
+
+  listEasyFriends(): Promise<EasyFriendSnapshot> {
+    if (this.closed) return Promise.reject(new AppError("CRYPTO_RUNTIME_FAILED", "Snapchat client is closed"));
+    return this.components.friends.listEasy();
   }
 
   async watchEvents(): Promise<AsyncIterableIterator<GatewayEvent>> {

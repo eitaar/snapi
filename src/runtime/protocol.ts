@@ -40,6 +40,7 @@ export type RuntimeCommand =
   | { readonly method: "syncMessages" }
   | { readonly method: "setSnapWatchActive"; readonly active: boolean }
   | { readonly method: "syncFriends" }
+  | { readonly method: "syncFriendsForSending" }
   | { readonly method: "drainChatMessages" }
   | { readonly method: "drainSnapMessages" }
   | { readonly method: "shutdown" };

@@ -24,3 +24,14 @@ export interface FriendSnapshot {
   readonly friends: readonly FriendRecord[];
   readonly incomingRequests: readonly FriendRecord[];
 }
+
+export interface EasyFriendRecord {
+  readonly recipientId: string;
+  readonly conversationId: string;
+  readonly username?: string;
+  readonly displayName?: string;
+}
+
+export interface EasyFriendSnapshot {
+  readonly friends: readonly EasyFriendRecord[];
+}

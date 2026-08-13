@@ -87,6 +87,16 @@ parentPort.on("message", (request: Record<string, unknown>) => {
     });
     return;
   }
+  if (request.method === "syncFriendsForSending") {
+    parentPort.postMessage({
+      id,
+      ok: true,
+      value: {
+        friends: [{ recipientId: "recipient-1", conversationId: "conversation-1" }],
+      },
+    });
+    return;
+  }
   if (request.method === "exportState") {
     parentPort.postMessage({ id, ok: true, value: { localStorage: {}, indexedDb: { databases: [] } } });
     return;

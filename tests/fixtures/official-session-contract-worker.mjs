@@ -161,7 +161,15 @@ expose(parentPort, {
       handlers: {
         getConversationManager: () => ({
           fixtureProxy: true,
-          handlers: { ready: () => true },
+          handlers: {
+            ready: () => true,
+            getOneOnOneConversationIds: async (users, callback) => {
+              await callRemote(callback, ["onSuccess", "apply"], [undefined, [[{
+                userId: users[0],
+                conversationId: { str: "22222222-2222-4222-8222-222222222222" },
+              }]]]);
+            },
+          },
         }),
         getFeedManager: () => ({
           fixtureProxy: true,

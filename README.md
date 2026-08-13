@@ -65,6 +65,7 @@ node dist/cli/index.js snap send <recipient-uuid> photo.png --conversation-id <c
 node dist/cli/index.js snap watch --output-dir .snap-incoming --json
 node dist/cli/index.js friends list --json
 node dist/cli/index.js friends list --query <username-or-user-id> --json
+node dist/cli/index.js friends list --easy --json
 node dist/cli/index.js gateway status
 node dist/cli/index.js debug doctor --runtime
 $env:SNAP_LIVE_TESTS='1'; node dist/cli/index.js debug gateway-handshake --json
@@ -122,7 +123,10 @@ through the public event stream.
 relationships and emits only user IDs, usernames, display names, relationship
 status, direction, timestamps, and incoming-request visibility. `--query` is an
 exact local lookup; ambiguous names are rejected. Friend-request mutations are
-not included in this read-only surface.
+not included in this read-only surface. `--easy` performs the additional
+read-only one-to-one conversation lookup and emits only send-ready
+`recipientId`, `conversationId`, and optional names for mutual friends with a
+resolved conversation. It requires the login-time messaging session state.
 
 ## Verification
 

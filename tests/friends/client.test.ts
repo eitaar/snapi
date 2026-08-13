@@ -22,4 +22,14 @@ describe("FriendsClient", () => {
     await expect(client.list()).resolves.toEqual(snapshot);
     expect(syncFriends).toHaveBeenCalledOnce();
   });
+
+  it("delegates send-ready easy listing to the runtime", async () => {
+    const easy = { friends: [{ recipientId: "id-1", conversationId: "conversation-1" }] };
+    const syncFriends = vi.fn(async () => snapshot);
+    const syncFriendsForSending = vi.fn(async () => easy);
+    const client = new FriendsClient({ runtime: { syncFriends, syncFriendsForSending } });
+
+    await expect(client.listEasy()).resolves.toEqual(easy);
+    expect(syncFriendsForSending).toHaveBeenCalledOnce();
+  });
 });
