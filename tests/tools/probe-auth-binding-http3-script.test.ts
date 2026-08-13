@@ -37,6 +37,7 @@ describe('probe-auth-binding-http3 PowerShell contract', () => {
     expect(script).not.toContain('$FixedVersionUrl');
     expect(script).toContain('messagingcoreservice.MessagingCoreService');
     expect(script).toContain('response.Version');
+    expect(script).toContain("ToString('yyyy-MM-ddTHH:mm:ss.fffZ')");
     expect(script).not.toContain('TryGetProperty');
     expect(script).toContain("if ($postStatus -lt 200 -or $postStatus -ge 300)");
   });
