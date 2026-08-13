@@ -19,6 +19,7 @@ function miniHar(overrides: {
   readonly gatewayStartedAt?: string;
   readonly messagingStartedAt?: string;
   readonly versionMarker?: string;
+  readonly versionMarkerOrigin?: string;
   readonly messagingHttpVersion?: string;
   readonly messagingPostData?: Record<string, string>;
 } = {}): object {
@@ -31,7 +32,7 @@ function miniHar(overrides: {
         ...(overrides.includeVersionMarker === false ? [] : [{
           request: {
             method: "GET",
-            url: `https://web.snapchat.com/web/version.json?version=${overrides.versionMarker ?? "8dd50222"}`,
+            url: `${overrides.versionMarkerOrigin ?? "https://web.snapchat.com"}/web/version.json?version=${overrides.versionMarker ?? "8dd50222"}`,
             headers: [{ name: ":path", value: "/web/version.json?version=8dd50222" }],
           },
           response: { status: 200, headers: [] },
@@ -119,6 +120,14 @@ describe("summarizeAuthBindingHar", () => {
     expect(JSON.stringify(summary)).not.toContain(TOKEN_SENTINEL);
     expect(JSON.stringify(summary)).not.toContain(COOKIE_SENTINEL);
     expect(JSON.stringify(summary)).not.toContain(HEADER_NAME_SENTINEL);
+  });
+
+  it("accepts a pinned build marker from the official www origin", () => {
+    const summary = summarizeAuthBindingHar(JSON.stringify(miniHar({
+      versionMarkerOrigin: "https://www.snapchat.com",
+    })));
+
+    expect(summary.buildId).toBe("8dd50222");
   });
 
   it.each([

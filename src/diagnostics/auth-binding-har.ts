@@ -2,6 +2,10 @@ import { createHash } from "node:crypto";
 import { AppError } from "../errors.js";
 
 const BUILD_ID = "8dd50222" as const;
+const BUILD_MARKER_ORIGINS = new Set([
+  "https://web.snapchat.com",
+  "https://www.snapchat.com",
+]);
 const GATEWAY_URL = "wss://aws.duplex.snapchat.com/snapchat.gateway.Gateway/WebSocketConnect";
 const MESSAGING_ORIGIN = "https://web.snapchat.com";
 const EXPECTED_GATEWAY_ORIGIN = "https://www.snapchat.com";
@@ -235,7 +239,8 @@ function buildIsPinned(entries: readonly HarEntry[]): boolean {
   return entries.some((entry) => {
     const url = urlOf(entry);
     return entry.request.method === "GET" && entry.response?.status === 200 &&
-      url?.origin === MESSAGING_ORIGIN && url.pathname === "/web/version.json" &&
+      url !== undefined && BUILD_MARKER_ORIGINS.has(url.origin) &&
+      url.pathname === "/web/version.json" &&
       url.searchParams.get("version") === BUILD_ID;
   });
 }
