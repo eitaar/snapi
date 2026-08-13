@@ -1,0 +1,28 @@
+[
+  {
+    "authEpoch": "epoch-a",
+    "context": "brave-h2-natural",
+    "operation": "messaging-read",
+    "endpointPath": "/messagingcoreservice.MessagingCoreService/DeltaSync",
+    "startedAt": "2026-08-13T00:00:00.000Z",
+    "status": 200,
+    "protocol": "h2",
+    "requestBodyBytes": 3,
+    "requestBodySha256": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+    "safeHeaderNames": ["accept", "content-type"],
+    "tokenEqualsEpochBaseline": true
+  },
+  {
+    "authEpoch": "epoch-a",
+    "context": "node-http2",
+    "operation": "messaging-read",
+    "endpointPath": "/messagingcoreservice.MessagingCoreService/DeltaSync",
+    "startedAt": "2026-08-13T00:01:00.000Z",
+    "status": 401,
+    "protocol": "h2",
+    "requestBodyBytes": 3,
+    "requestBodySha256": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+    "safeHeaderNames": ["accept", "content-type"],
+    "tokenEqualsEpochBaseline": true
+  }
+]

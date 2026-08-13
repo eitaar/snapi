@@ -11,6 +11,7 @@ import type { ConfiguredGatewayStatusClient } from "./commands/gateway-status.js
 import type { ConfiguredChatWatchClient } from "./commands/chat-watch.js";
 import type { ConfiguredSnapWatchClient } from "./commands/snap-watch.js";
 import type { ConfiguredFriendsListClient } from "./commands/friends-list.js";
+import type { DebugAuthBindingDependencies } from "./commands/debug-auth-binding.js";
 import { createConfiguredGatewayStatusClient } from "./gateway-status-client.js";
 import { createProcessIo, type CliIo } from "./io.js";
 
@@ -28,6 +29,7 @@ export interface CliDependencies {
   readonly now?: () => Date;
   readonly env?: NodeJS.ProcessEnv;
   readonly signal?: AbortSignal;
+  readonly debugAuthBinding?: DebugAuthBindingDependencies;
 }
 
 async function createConfiguredClient(): Promise<ConfiguredCliClient> {
@@ -68,6 +70,20 @@ export async function main(
   if (argv.length === 1 && argv[0] === "--version") {
     io.stdout(io.version);
     return 0;
+  }
+  if (argv.length >= 2 && argv[0] === "debug" && argv[1] === "auth-binding") {
+    try {
+      const runDebugAuthBinding = (await import("./commands/debug-auth-binding.js")).runDebugAuthBinding;
+      return await runDebugAuthBinding(argv.slice(2), io, {
+        ...(dependencies.debugAuthBinding ?? {}),
+        ...(dependencies.readFile === undefined ? {} : { readFile: dependencies.readFile }),
+        ...(dependencies.fetch === undefined ? {} : { fetch: dependencies.fetch }),
+        ...(dependencies.now === undefined ? {} : { now: dependencies.now }),
+        ...(dependencies.env === undefined ? {} : { env: dependencies.env }),
+      });
+    } catch (error) {
+      return emitError(io, error);
+    }
   }
   if (argv.length === 3 && argv[0] === "debug" && argv[1] === "doctor" && argv[2] === "--runtime") {
     const runRuntimeDoctor = dependencies.runRuntimeDoctor ??
