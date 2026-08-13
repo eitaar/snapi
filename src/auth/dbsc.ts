@@ -2,6 +2,7 @@ import { spawn } from "node:child_process";
 import { DatabaseSync } from "node:sqlite";
 import { join } from "node:path";
 import { AppError } from "../errors.js";
+import { CookieJar } from "./cookie-jar.js";
 
 const DBSC_SITE_KEY = "https://snapchat.com";
 const DEFAULT_REFRESH_URL = "https://accounts.snapchat.com/accounts/dbsc/refresh";
@@ -179,30 +180,6 @@ function base64Url(bytes: Uint8Array): string {
   return Buffer.from(bytes).toString("base64url");
 }
 
-function mergeSetCookies(cookieHeader: string, headers: Headers): string {
-  const entries = new Map<string, string>();
-  for (const part of cookieHeader.split(";")) {
-    const trimmed = part.trim();
-    const separator = trimmed.indexOf("=");
-    if (separator > 0) entries.set(trimmed.slice(0, separator), trimmed.slice(separator + 1));
-  }
-  const getter = (headers as Headers & { getSetCookie?: () => string[] }).getSetCookie;
-  const combined = headers.get("set-cookie");
-  const setCookies = typeof getter === "function"
-    ? getter.call(headers)
-    : combined === null ? [] : [combined];
-  for (const setCookie of setCookies) {
-    const pair = setCookie.split(";", 1)[0]?.trim() ?? "";
-    const separator = pair.indexOf("=");
-    if (separator <= 0) continue;
-    const name = pair.slice(0, separator);
-    const value = pair.slice(separator + 1);
-    if (value === "") entries.delete(name);
-    else entries.set(name, value);
-  }
-  return [...entries].map(([name, value]) => `${name}=${value}`).join("; ");
-}
-
 function proofJwt(challenge: string, signer: DbscSigner): { readonly input: Uint8Array; readonly header: string; readonly payload: string } {
   const header = base64Url(new TextEncoder().encode(JSON.stringify({ typ: "dbsc+jwt", alg: signer.algorithm })));
   const payload = base64Url(new TextEncoder().encode(JSON.stringify({ jti: challenge })));
@@ -242,7 +219,12 @@ export async function refreshBraveDbsc(
     if (!challengeResponse.ok) {
       throw new AppError("AUTH_CONTEXT_UNAVAILABLE", "Snapchat rejected the DBSC refresh", { status: challengeResponse.status });
     }
-    return { cookieHeader: mergeSetCookies(cookieHeader, challengeResponse.headers) };
+      return {
+        cookieHeader: new CookieJar()
+          .mergeHeader(session.refreshUrl, cookieHeader)
+          .setFromResponse(session.refreshUrl, challengeResponse)
+          .headerFor(session.refreshUrl),
+      };
   }
 
   const challenge = parseDbscChallenge(challengeHeader);
@@ -272,7 +254,12 @@ export async function refreshBraveDbsc(
   if (!refreshed.ok) {
     throw new AppError("AUTH_CONTEXT_UNAVAILABLE", "Snapchat rejected the DBSC proof", { status: refreshed.status });
   }
-  return { cookieHeader: mergeSetCookies(cookieHeader, refreshed.headers) };
+  return {
+    cookieHeader: new CookieJar()
+      .mergeHeader(session.refreshUrl, cookieHeader)
+      .setFromResponse(session.refreshUrl, refreshed)
+      .headerFor(session.refreshUrl),
+  };
 }
 
 interface PowerShellResult {

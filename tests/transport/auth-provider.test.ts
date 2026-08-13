@@ -1,6 +1,7 @@
 import { describe, expect, it, vi } from "vitest";
 import { AuthProvider } from "../../src/transport/auth-provider.js";
 import type { SessionExport } from "../../src/session/types.js";
+import { AppError } from "../../src/errors.js";
 
 function session(exportedAt = "2026-08-11T00:30:00.000Z"): SessionExport {
   return {
@@ -103,6 +104,58 @@ describe("AuthProvider", () => {
 
     await expect(provider.refreshOnce({ kind: "http", status: 401 })).rejects.toThrow("refresh denied");
     expect(provider.sessionSnapshot()).toBe(original);
+  });
+
+  it("classifies browser-context renewal failures as login-required", async () => {
+    const provider = new AuthProvider(session(), {
+      refresh: async () => {
+        throw new AppError("AUTH_CONTEXT_UNAVAILABLE", "browser context required", { status: 303 });
+      },
+    });
+
+    await expect(provider.refreshOnce({ kind: "http", status: 401 })).rejects.toMatchObject({
+      code: "AUTH_CONTEXT_UNAVAILABLE",
+    });
+    expect(provider.renewalStatus()).toEqual({
+      state: "login-required",
+      consecutiveFailures: 1,
+      lastFailure: "browser-context-required",
+    });
+  });
+
+  it("backs off transient automatic renewal failures and recovers", async () => {
+    vi.useFakeTimers();
+    vi.setSystemTime("2026-08-11T01:00:00.000Z");
+    const refreshed = session("2026-08-11T01:00:02.000Z");
+    let attempts = 0;
+    const refresh = vi.fn(async () => {
+      attempts += 1;
+      if (attempts === 1) throw new Error("temporary network failure");
+      return refreshed;
+    });
+    const errors: unknown[] = [];
+    const provider = new AuthProvider(session("2026-08-11T00:59:59.000Z"), {
+      refresh,
+      maxAgeMs: 2_000,
+      initialBackoffMs: 100,
+      maxBackoffMs: 1_000,
+      random: () => 1,
+    });
+
+    const stop = provider.startAutoRefresh((error) => errors.push(error));
+    await vi.advanceTimersByTimeAsync(1_000);
+    expect(refresh).toHaveBeenCalledOnce();
+    expect(errors).toHaveLength(1);
+    expect(provider.renewalStatus()).toMatchObject({ state: "backoff", consecutiveFailures: 1 });
+
+    await vi.advanceTimersByTimeAsync(99);
+    expect(refresh).toHaveBeenCalledOnce();
+    await vi.advanceTimersByTimeAsync(1);
+    expect(refresh).toHaveBeenCalledTimes(2);
+    expect(provider.renewalStatus()).toEqual({ state: "ready", consecutiveFailures: 0 });
+
+    stop();
+    vi.useRealTimers();
   });
 
   it("automatically refreshes and publishes shared auth while a client stays open", async () => {

@@ -1,4 +1,5 @@
 import type { SessionExport } from "../session/types.js";
+import { AppError } from "../errors.js";
 
 export interface RequestAuth {
   readonly httpToken: string;
@@ -17,6 +18,18 @@ export interface AuthProviderDependencies {
   readonly persist?: (session: SessionExport) => Promise<void>;
   readonly now?: () => number;
   readonly maxAgeMs?: number;
+  readonly initialBackoffMs?: number;
+  readonly maxBackoffMs?: number;
+  readonly random?: () => number;
+}
+
+export type RenewalState = "ready" | "renewing" | "backoff" | "login-required";
+export type RenewalFailure = "browser-context-required" | "session-reexport-required" | "transient";
+
+export interface RenewalStatus {
+  readonly state: RenewalState;
+  readonly consecutiveFailures: number;
+  readonly lastFailure?: RenewalFailure;
 }
 
 export interface RequestAuthSource {
@@ -27,6 +40,9 @@ export interface RequestAuthSource {
 export class AuthProvider implements RequestAuthSource {
   private current: SessionExport;
   private refreshPromise: Promise<RequestAuth> | undefined;
+  private state: RenewalState = "ready";
+  private consecutiveFailures = 0;
+  private lastFailure: RenewalFailure | undefined;
 
   constructor(
     session: SessionExport,
@@ -80,7 +96,7 @@ export class AuthProvider implements RequestAuthSource {
           () => schedule(),
           (error: unknown) => {
             onError(error);
-            schedule(maxAgeMs);
+            if (this.state !== "login-required") schedule(this.nextBackoffDelay());
           },
         );
       }, delay);
@@ -98,17 +114,63 @@ export class AuthProvider implements RequestAuthSource {
   refreshOnce(_reason: AuthRefreshReason): Promise<RequestAuth> {
     if (this.refreshPromise !== undefined) return this.refreshPromise;
     this.refreshPromise = (async () => {
-      const refreshed = await this.dependencies.refresh(this.current);
-      await this.dependencies.persist?.(refreshed);
-      this.current = refreshed;
-      return this.requestAuth(true);
+      this.state = "renewing";
+      try {
+        const refreshed = await this.dependencies.refresh(this.current);
+        await this.dependencies.persist?.(refreshed);
+        this.current = refreshed;
+        this.state = "ready";
+        this.consecutiveFailures = 0;
+        this.lastFailure = undefined;
+        return this.requestAuth(true);
+      } catch (error) {
+        this.consecutiveFailures += 1;
+        this.lastFailure = this.classifyFailure(error);
+        this.state = this.lastFailure === "browser-context-required" ? "login-required" : "backoff";
+        throw error;
+      }
     })().finally(() => {
       this.refreshPromise = undefined;
     });
     return this.refreshPromise;
   }
 
+  renewalStatus(): RenewalStatus {
+    return {
+      state: this.state,
+      consecutiveFailures: this.consecutiveFailures,
+      ...(this.lastFailure === undefined ? {} : { lastFailure: this.lastFailure }),
+    };
+  }
+
   sessionSnapshot(): SessionExport {
     return this.current;
+  }
+
+  private nextBackoffDelay(): number {
+    const initial = this.dependencies.initialBackoffMs ?? 1_000;
+    const maximum = this.dependencies.maxBackoffMs ?? 300_000;
+    const exponential = Math.min(
+      maximum,
+      initial * (2 ** Math.max(0, this.consecutiveFailures - 1)),
+    );
+    const random = Math.min(1, Math.max(0, this.dependencies.random?.() ?? Math.random()));
+    return Math.max(1, Math.round(exponential * (0.5 + random * 0.5)));
+  }
+
+  private classifyFailure(error: unknown): RenewalFailure {
+    if (error instanceof AppError) {
+      const status = error.details.status;
+      if (
+        status === 303
+        || status === 403
+        || (typeof status === "number" && status >= 300 && status < 400)
+      ) {
+        return "browser-context-required";
+      }
+      if (error.code === "AUTH_CONTEXT_UNAVAILABLE") return "browser-context-required";
+      if (error.code === "SESSION_REEXPORT_REQUIRED") return "session-reexport-required";
+    }
+    return "transient";
   }
 }

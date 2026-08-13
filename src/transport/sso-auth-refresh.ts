@@ -1,4 +1,5 @@
 import { AppError } from "../errors.js";
+import { CookieJar } from "../auth/cookie-jar.js";
 import type { SessionExport } from "../session/types.js";
 
 const SSO_URL = "https://accounts.snapchat.com/accounts/sso?client_id=web-calling-corp--prod";
@@ -11,38 +12,6 @@ export interface SsoRefreshDependencies {
   readonly fetch?: typeof globalThis.fetch;
   readonly now?: () => Date;
   readonly attestation?: (session: SessionExport) => Promise<string>;
-}
-
-function cookieEntries(cookieHeader: string): Map<string, string> {
-  const entries = new Map<string, string>();
-  for (const part of cookieHeader.split(";")) {
-    const trimmed = part.trim();
-    const separator = trimmed.indexOf("=");
-    if (separator <= 0) continue;
-    entries.set(trimmed.slice(0, separator), trimmed.slice(separator + 1));
-  }
-  return entries;
-}
-
-function mergeSetCookies(cookieHeader: string, setCookies: readonly string[]): string {
-  const entries = cookieEntries(cookieHeader);
-  for (const setCookie of setCookies) {
-    const pair = setCookie.split(";", 1)[0]?.trim() ?? "";
-    const separator = pair.indexOf("=");
-    if (separator <= 0) continue;
-    const name = pair.slice(0, separator);
-    const value = pair.slice(separator + 1);
-    if (value === "") entries.delete(name);
-    else entries.set(name, value);
-  }
-  return [...entries].map(([name, value]) => `${name}=${value}`).join("; ");
-}
-
-function responseSetCookies(headers: Headers): readonly string[] {
-  const getter = (headers as Headers & { getSetCookie?: () => string[] }).getSetCookie;
-  if (typeof getter === "function") return getter.call(headers);
-  const combined = headers.get("set-cookie");
-  return combined === null ? [] : [combined];
 }
 
 function redirectMetadata(
@@ -122,15 +91,16 @@ export async function refreshSnapchatWebSession(
   }
 
   const refreshedAt = (dependencies.now ?? (() => new Date()))().toISOString();
+  const cookieJar = new CookieJar({ now: () => Date.parse(refreshedAt) });
   return {
     ...session,
     exportedAt: refreshedAt,
     auth: {
       ...session.auth,
-      cookieHeader: mergeSetCookies(
-        session.auth.cookieHeader,
-        responseSetCookies(response.headers),
-      ),
+      cookieHeader: cookieJar
+        .mergeHeader(SESSION_REFRESH_URL, session.auth.cookieHeader)
+        .setFromResponse(SESSION_REFRESH_URL, response)
+        .headerFor(SESSION_REFRESH_URL),
       webSessionRefreshedAt: refreshedAt,
     },
   };
@@ -206,6 +176,7 @@ export async function refreshSnapchatSso(
     throw new AppError("INVALID_SESSION_EXPORT", "SSO refresh account does not match the session export");
   }
   const refreshedAt = (dependencies.now ?? (() => new Date()))().toISOString();
+  const cookieJar = new CookieJar({ now: () => Date.parse(refreshedAt) });
   return {
     ...session,
     exportedAt: refreshedAt,
@@ -214,7 +185,10 @@ export async function refreshSnapchatSso(
       httpToken: token,
       gatewayToken: token,
       tokenRefreshedAt: refreshedAt,
-      ssoCookieHeader: mergeSetCookies(ssoCookieHeader, responseSetCookies(response.headers)),
+      ssoCookieHeader: cookieJar
+        .mergeHeader(SSO_URL, ssoCookieHeader)
+        .setFromResponse(SSO_URL, response)
+        .headerFor(SSO_URL),
     },
   };
 }
