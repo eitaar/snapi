@@ -137,6 +137,14 @@ export async function main(
       return emitError(io, error);
     }
   }
+  if (argv.length >= 2 && argv[0] === "session" && argv[1] === "login") {
+    try {
+      const runSessionLogin = (await import("./commands/session-login.js")).runSessionLogin;
+      return await runSessionLogin(argv.slice(2), io);
+    } catch (error) {
+      return emitError(io, error);
+    }
+  }
   if (argv.length >= 2 && argv[0] === "chat" && argv[1] === "send") {
     try {
       const runChatSend = (await import("./commands/chat-send.js")).runChatSend;
