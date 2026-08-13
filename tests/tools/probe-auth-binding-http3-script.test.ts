@@ -1,3 +1,4 @@
+import { spawnSync } from 'node:child_process';
 import { readFileSync } from 'node:fs';
 import { fileURLToPath } from 'node:url';
 import { describe, expect, it } from 'vitest';
@@ -10,11 +11,14 @@ describe('probe-auth-binding-http3 PowerShell contract', () => {
   it('uses exact .NET HTTP/3 and only the fixed Messaging read allowlist', () => {
     const script = readFileSync(scriptPath, 'utf8');
 
-    expect(script).toContain('[CmdletBinding(PositionalBinding=$false)]');
-    expect(script).toMatch(
-      /\[Parameter\(ValueFromRemainingArguments=\$true\)\]\[object\[\]\]\$UnboundArguments/,
-    );
-    expect(script).toContain("$UnboundArguments.Count -gt 0");
+    expect(script).toMatch(/^param\(\)\r?\n/);
+    expect(script).not.toContain('CmdletBinding');
+    expect(script).not.toContain('UnboundArguments');
+    expect(script).toContain('$args.Count -eq 4');
+    expect(script).toContain('$args[$index]');
+    expect(script).toContain("'-HarPath'");
+    expect(script).toContain("'-AuthEpoch'");
+    expect(script).toContain('StartsWith');
     expect(script).toContain('System.Net.Http.HttpClient');
     expect(script).toMatch(/DefaultRequestVersion\s*=\s*\[Version\]::new\(3,\s*0\)/);
     expect(script).toContain('RequestVersionExact');
@@ -92,18 +96,55 @@ describe('probe-auth-binding-http3 PowerShell contract', () => {
     );
   });
 
-  it('has exactly two public named parameters and rejects unbound arguments generically', () => {
+  it('has exactly two manually parsed named options and rejects malformed invocations offline', () => {
     const script = readFileSync(scriptPath, 'utf8');
-    const parameterBlock = script.match(/param\(([\s\S]*?)\n\)/)?.[1] ?? '';
 
-    expect(parameterBlock).toContain('[string]$HarPath');
-    expect(parameterBlock).toContain('[string]$AuthEpoch');
-    expect(parameterBlock).toContain('$UnboundArguments');
-    expect([...parameterBlock.matchAll(/\[string\]\$([A-Za-z]+)/g)].map((match) => match[1])).toEqual([
-      'HarPath',
-      'AuthEpoch',
-    ]);
+    expect(script.startsWith('param()')).toBe(true);
+    expect(script).toContain('$seenHarPath');
+    expect(script).toContain('$seenAuthEpoch');
+    expect(script).toContain('$harPath');
+    expect(script).toContain('$authEpoch');
     expect(script).toMatch(/-Category\s+'invalid-input'/);
     expect(script).not.toMatch(/(?:Write-Error|throw\s+\$|\$PSCmdlet\.WriteError)/i);
+
+    const malformedCases = [
+      ['positional-one', 'positional-two'],
+      ['-Unknown', 'value', '-AuthEpoch', 'epoch'],
+      ['-HarPath', 'first.har', '-HarPath', 'second.har'],
+      ['-HarPath', '-AuthEpoch', 'epoch', 'extra'],
+      ['-HarPath', 'path.har'],
+      ['-HarPath', 'path.har', '-AuthEpoch'],
+      ['-HarPath', 'path.har', '-AuthEpoch', '-next'],
+      ['-HarPath', '', '-AuthEpoch', 'epoch'],
+    ];
+
+    for (const args of malformedCases) {
+      const result = spawnSync(
+        'powershell.exe',
+        ['-NoProfile', '-File', scriptPath, ...args],
+        { encoding: 'utf8' },
+      );
+
+      expect(result.status, args.join(' ')).toBe(1);
+      expect(result.stderr, args.join(' ')).toBe('');
+      const outputLines = result.stdout.trim().split(/\r?\n/);
+      expect(outputLines).toHaveLength(1);
+      expect(JSON.parse(outputLines[0])).toMatchObject({
+        context: 'dotnet-http3',
+        operation: 'messaging-read',
+        transportError: 'invalid-input',
+      });
+    }
+
+    const accepted = spawnSync(
+      'powershell.exe',
+      ['-NoProfile', '-File', scriptPath, '-HarPath', 'path.har', '-AuthEpoch', 'epoch-1'],
+      { encoding: 'utf8' },
+    );
+    expect(accepted.status).toBe(1);
+    expect(accepted.stderr).toBe('');
+    expect(JSON.parse(accepted.stdout.trim())).toMatchObject({
+      transportError: 'invalid-har',
+    });
   });
 });

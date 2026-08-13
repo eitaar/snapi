@@ -1,9 +1,4 @@
-[CmdletBinding(PositionalBinding=$false)]
-param(
-    [string]$HarPath,
-    [string]$AuthEpoch,
-    [Parameter(ValueFromRemainingArguments=$true)][object[]]$UnboundArguments
-)
+param()
 
 $ErrorActionPreference = 'Stop'
 
@@ -82,12 +77,51 @@ $endpointPath = $DefaultEndpointPath
 $requestBodyBytes = $null
 $requestBodySha256 = $null
 $safeHeaderNames = @()
-$AllowedBoundParameterNames = @('HarPath', 'AuthEpoch', 'UnboundArguments')
 
-if ((@($PSBoundParameters.Keys | Where-Object { $_ -notin $AllowedBoundParameterNames }).Count -gt 0) -or
-    ($null -ne $UnboundArguments -and $UnboundArguments.Count -gt 0)) {
+$harPath = $null
+$authEpoch = $null
+$seenHarPath = $false
+$seenAuthEpoch = $false
+$hasExpectedArgumentCount = $args.Count -eq 4
+$invalidArguments = -not $hasExpectedArgumentCount
+
+if (-not $invalidArguments) {
+    for ($index = 0; $index -lt $args.Count; $index += 2) {
+        $option = [string]$args[$index]
+        $value = [string]$args[$index + 1]
+
+        if ($option -notin @('-HarPath', '-AuthEpoch') -or
+            [string]::IsNullOrEmpty($value) -or
+            $value.StartsWith('-')) {
+            $invalidArguments = $true
+            break
+        }
+
+        if ($option -eq '-HarPath') {
+            if ($seenHarPath) {
+                $invalidArguments = $true
+                break
+            }
+            $harPath = $value
+            $seenHarPath = $true
+        }
+        else {
+            if ($seenAuthEpoch) {
+                $invalidArguments = $true
+                break
+            }
+            $authEpoch = $value
+            $seenAuthEpoch = $true
+        }
+    }
+}
+
+if ($invalidArguments -or -not $seenHarPath -or -not $seenAuthEpoch) {
     Exit-SanitizedFailure -ResultAuthEpoch $null -EndpointPath $endpointPath -Status $null -RequestBodyBytes $null -RequestBodySha256 $null -SafeHeaderNames $safeHeaderNames -Category 'invalid-input'
 }
+
+$HarPath = $harPath
+$AuthEpoch = $authEpoch
 
 if ([string]::IsNullOrWhiteSpace($AuthEpoch) -or
     $AuthEpoch.Length -gt 64 -or
