@@ -18,6 +18,8 @@ describe('probe-auth-binding-http3 PowerShell contract', () => {
     expect(script).toContain('$args[$index]');
     expect(script).toContain("'-HarPath'");
     expect(script).toContain("'-AuthEpoch'");
+    expect(script).toContain("[string]::Equals($option, '-HarPath', [StringComparison]::Ordinal)");
+    expect(script).toContain("[string]::Equals($option, '-AuthEpoch', [StringComparison]::Ordinal)");
     expect(script).toContain('StartsWith');
     expect(script).toContain('System.Net.Http.HttpClient');
     expect(script).toMatch(/DefaultRequestVersion\s*=\s*\[Version\]::new\(3,\s*0\)/);
@@ -110,6 +112,8 @@ describe('probe-auth-binding-http3 PowerShell contract', () => {
     const malformedCases = [
       ['positional-one', 'positional-two'],
       ['-Unknown', 'value', '-AuthEpoch', 'epoch'],
+      ['-harpath', 'path.har', '-authepoch', 'epoch'],
+      ['-HARPATH', 'path.har', '-AUTHEPOCH', 'epoch'],
       ['-HarPath', 'first.har', '-HarPath', 'second.har'],
       ['-HarPath', '-AuthEpoch', 'epoch', 'extra'],
       ['-HarPath', 'path.har'],

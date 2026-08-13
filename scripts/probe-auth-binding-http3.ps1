@@ -89,15 +89,17 @@ if (-not $invalidArguments) {
     for ($index = 0; $index -lt $args.Count; $index += 2) {
         $option = [string]$args[$index]
         $value = [string]$args[$index + 1]
+        $isHarPathOption = [string]::Equals($option, '-HarPath', [StringComparison]::Ordinal)
+        $isAuthEpochOption = [string]::Equals($option, '-AuthEpoch', [StringComparison]::Ordinal)
 
-        if ($option -notin @('-HarPath', '-AuthEpoch') -or
+        if (-not ($isHarPathOption -or $isAuthEpochOption) -or
             [string]::IsNullOrEmpty($value) -or
             $value.StartsWith('-')) {
             $invalidArguments = $true
             break
         }
 
-        if ($option -eq '-HarPath') {
+        if ($isHarPathOption) {
             if ($seenHarPath) {
                 $invalidArguments = $true
                 break
