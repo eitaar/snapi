@@ -29,10 +29,11 @@ function refreshedSession(accountId = "account-1"): SessionExport {
   };
 }
 
-function client(timeoutMs = 10_000): ContentRuntimeClient {
+function client(timeoutMs = 10_000, shutdownTimeoutMs?: number): ContentRuntimeClient {
   return new ContentRuntimeClient({
     workerUrl: new URL("../fixtures/runtime-worker.ts", import.meta.url),
     timeoutMs,
+    ...(shutdownTimeoutMs === undefined ? {} : { shutdownTimeoutMs }),
   });
 }
 
@@ -138,6 +139,14 @@ describe("ContentRuntimeClient", () => {
     const runtime = client();
     await runtime.initialize(session());
     await runtime.shutdown();
+    await expect(runtime.exportState()).rejects.toMatchObject({ code: "CRYPTO_RUNTIME_FAILED" });
+  });
+
+  it("forces termination when graceful shutdown exceeds its deadline", async () => {
+    const runtime = client(1_000, 25);
+    await runtime.initialize(session("never"));
+
+    await expect(runtime.shutdown()).resolves.toBeUndefined();
     await expect(runtime.exportState()).rejects.toMatchObject({ code: "CRYPTO_RUNTIME_FAILED" });
   });
 });

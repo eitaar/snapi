@@ -3,11 +3,13 @@ import { parentPort as nullableParentPort, workerData } from "node:worker_thread
 const parentPort = nullableParentPort;
 if (parentPort === null) throw new Error("runtime fixture requires a parent port");
 let authUpdated = false;
+let accountId = "";
 
 parentPort.on("message", (request: Record<string, unknown>) => {
   const id = request.id as number;
   if (request.method === "initialize") {
     const session = request.session as { accountId: string };
+    accountId = session.accountId;
     if (session.accountId === "protocol-violation") {
       parentPort.postMessage({ unexpected: true });
       return;
@@ -90,6 +92,7 @@ parentPort.on("message", (request: Record<string, unknown>) => {
     return;
   }
   if (request.method === "shutdown") {
+    if (accountId === "never") return;
     parentPort.postMessage({ id, ok: true, value: undefined });
     parentPort.close();
   }

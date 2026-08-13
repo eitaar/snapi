@@ -45,6 +45,7 @@ export async function runSnapSend(
     throw new AppError("INVALID_IMAGE", "Unable to read the photo file");
   }
   const configured = await createClient();
+  let confirmed = false;
   try {
     const result = await configured.client.sendPhotoSnap({
       recipientId,
@@ -52,6 +53,7 @@ export async function runSnapSend(
       filename,
       bytes,
     });
+    confirmed = result.status === "confirmed";
     if (configured.output === "json") {
       io.stdout(JSON.stringify({
         type: "snap.sent",
@@ -64,6 +66,13 @@ export async function runSnapSend(
     }
     return 0;
   } finally {
-    await configured.client.close();
+    try {
+      await configured.client.close();
+    } catch {
+      if (!confirmed) {
+        throw new Error("Unable to clean up after an unconfirmed send");
+      }
+      io.stderr("CLEANUP_FORCED: Delivery was confirmed; client cleanup did not complete");
+    }
   }
 }

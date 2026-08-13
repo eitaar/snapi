@@ -17,6 +17,7 @@ import { toRuntimeAuthUpdate, type RuntimeCommand, type RuntimeRequest, type Run
 export interface ContentRuntimeClientOptions {
   readonly workerUrl?: URL;
   readonly timeoutMs?: number;
+  readonly shutdownTimeoutMs?: number;
   readonly assetDir?: string;
   readonly allowNetwork?: boolean;
 }
@@ -44,12 +45,14 @@ function runtimeResponse(value: unknown): value is RuntimeResponse {
 export class ContentRuntimeClient {
   private readonly worker: Worker;
   private readonly timeoutMs: number;
+  private readonly shutdownTimeoutMs: number;
   private readonly pending = new Map<number, PendingRequest>();
   private nextId = 1;
   private closed = false;
 
   constructor(options: ContentRuntimeClientOptions = {}) {
     this.timeoutMs = options.timeoutMs ?? 10_000;
+    this.shutdownTimeoutMs = options.shutdownTimeoutMs ?? 5_000;
     this.worker = new Worker(options.workerUrl ?? new URL("./worker-entry.js", import.meta.url), {
       workerData: { assetDir: options.assetDir, allowNetwork: options.allowNetwork === true },
     });
@@ -92,7 +95,11 @@ export class ContentRuntimeClient {
     this.pending.clear();
   }
 
-  private call<T>(request: RuntimeCommand, transferList: readonly TransferListItem[] = []): Promise<T> {
+  private call<T>(
+    request: RuntimeCommand,
+    transferList: readonly TransferListItem[] = [],
+    timeoutMs = this.timeoutMs,
+  ): Promise<T> {
     if (this.closed) {
       return Promise.reject(new AppError("CRYPTO_RUNTIME_FAILED", "Content runtime is closed"));
     }
@@ -102,7 +109,7 @@ export class ContentRuntimeClient {
         this.pending.delete(id);
         const error = new AppError("CRYPTO_RUNTIME_FAILED", "Content runtime request timed out", {
           method: request.method,
-          timeoutMs: this.timeoutMs,
+          timeoutMs,
         });
         reject(error);
         this.failAll(error);
@@ -168,8 +175,14 @@ export class ContentRuntimeClient {
 
   async shutdown(): Promise<void> {
     if (this.closed) return;
-    await this.call<void>({ method: "shutdown" });
-    this.closed = true;
-    await this.worker.terminate();
+    try {
+      await this.call<void>({ method: "shutdown" }, [], this.shutdownTimeoutMs);
+    } catch {
+      // Delivery has already been classified by the caller. Cleanup must not
+      // turn a confirmed send into a failed operation.
+    } finally {
+      this.closed = true;
+      await this.worker.terminate().catch(() => undefined);
+    }
   }
 }

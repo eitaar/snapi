@@ -16,6 +16,21 @@ export interface ConfiguredChatSendClient {
 
 export type ChatSendClientFactory = () => Promise<ConfiguredChatSendClient>;
 
+async function closeAfterSend(
+  client: ChatSendClient,
+  confirmed: boolean,
+  io: CliIo,
+): Promise<void> {
+  try {
+    await client.close();
+  } catch {
+    if (!confirmed) {
+      throw new Error("Unable to clean up after an unconfirmed send");
+    }
+    io.stderr("CLEANUP_FORCED: Delivery was confirmed; client cleanup did not complete");
+  }
+}
+
 export async function runChatSend(
   argv: readonly string[],
   io: CliIo,
@@ -51,12 +66,14 @@ export async function runChatSend(
   const text = positionals[1]!;
 
   const configured = await createClient();
+  let confirmed = false;
   try {
     const result = await configured.client.sendText({
       recipientId,
       conversationId,
       text,
     });
+    confirmed = result.status === "confirmed";
     if (configured.output === "json") {
       io.stdout(JSON.stringify({
         type: "chat.sent",
@@ -69,6 +86,6 @@ export async function runChatSend(
     }
     return 0;
   } finally {
-    await configured.client.close();
+    await closeAfterSend(configured.client, confirmed, io);
   }
 }

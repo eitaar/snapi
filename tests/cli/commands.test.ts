@@ -89,6 +89,22 @@ describe("CLI commands", () => {
     expect(state.client.close).toHaveBeenCalledOnce();
   });
 
+  it("keeps a confirmed chat send successful when cleanup fails", async () => {
+    const output = io();
+    const state = configured({
+      close: vi.fn(async () => {
+        throw new Error("worker cleanup timed out");
+      }),
+    });
+    const code = await main([
+      "chat", "send", "recipient-id", "private message", "--conversation-id", "conversation-id",
+    ], output.value, { createClient: async () => state });
+
+    expect(code).toBe(0);
+    expect(JSON.parse(output.stdout[0]!)).toMatchObject({ type: "chat.sent", status: "confirmed" });
+    expect(output.stderr.join("\n")).toContain("cleanup");
+  });
+
   it("returns usage code without creating a client when conversation-id is missing", async () => {
     const output = io();
     const createClient = vi.fn();
@@ -134,6 +150,23 @@ describe("CLI commands", () => {
     });
     expect(output.stdout.join("\n")).not.toContain("1,2,3");
     expect(state.client.close).toHaveBeenCalledOnce();
+  });
+
+  it("keeps a confirmed photo Snap successful when cleanup fails", async () => {
+    const output = io();
+    const state = configured({
+      close: vi.fn(async () => {
+        throw new Error("worker cleanup timed out");
+      }),
+    });
+    const code = await main(["snap", "send", "recipient", "photo.png", "--conversation-id", "conversation"], output.value, {
+      createClient: async () => state,
+      readFile: async () => new Uint8Array([1, 2, 3]),
+    });
+
+    expect(code).toBe(0);
+    expect(JSON.parse(output.stdout[0]!)).toMatchObject({ type: "snap.sent", status: "confirmed" });
+    expect(output.stderr.join("\n")).toContain("cleanup");
   });
 
   it("connects the Gateway and prints its live status", async () => {
