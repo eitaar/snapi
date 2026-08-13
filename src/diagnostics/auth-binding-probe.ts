@@ -6,11 +6,6 @@ import { runReadOnlyAuthProbe, type ReadOnlyAuthProbeInput } from "./read-only-a
 import type { SafeAuthBindingObservation } from "./auth-binding-types.js";
 
 const HTTP2_ORIGIN = "https://web.snapchat.com";
-const HTTP2_PATHS = new Set([
-  "/messagingcoreservice.MessagingCoreService/DeltaSync",
-  "/messagingcoreservice.MessagingCoreService/GetGroups",
-  "/com.snapchat.deltaforce.external.DeltaForce/DeltaSync",
-]);
 const SAFE_REQUEST_HEADERS = new Set([
   "accept",
   "caller-source",
@@ -83,29 +78,26 @@ function validateCommon(input: NodeAuthBindingProbeInput): void {
 
 function requireMessagingRequest(input: NodeAuthBindingProbeInput): ReadOnlyAuthProbeInput["request"] {
   if (input.request === undefined) throw invalidConfig("Read-only messaging request is required");
-  if (input.auth.httpToken.trim() === "" || input.auth.cookieHeader.trim() === "") {
-    throw invalidSessionExport("HTTP token and web cookie are required");
-  }
   return input.request;
 }
 
-function decodeAllowlistedHttp2Request(request: ReadOnlyAuthProbeInput["request"]): { url: URL; body: Uint8Array } {
-  if (request.method.toUpperCase() !== "POST") throw invalidConfig("Read-only probe only allows POST");
-  let url: URL;
-  try {
-    url = new URL(request.url);
-  } catch {
-    throw invalidConfig("Read-only probe URL is invalid");
-  }
-  if (url.origin !== HTTP2_ORIGIN || url.protocol !== "https:" || url.search !== "" || url.hash !== "") {
-    throw invalidConfig("Read-only probe URL is not allowed");
-  }
-  if (!HTTP2_PATHS.has(url.pathname)) throw invalidConfig("Read-only probe path is not allowlisted");
-  if (
-    request.bodyBase64.length % 4 !== 0 ||
-    !/^(?:[A-Za-z0-9+/]{4})*(?:[A-Za-z0-9+/]{2}==|[A-Za-z0-9+/]{3}=)?$/.test(request.bodyBase64)
-  ) throw invalidConfig("Read-only probe body must be valid Base64");
-  return { url, body: new Uint8Array(Buffer.from(request.bodyBase64, "base64")) };
+async function validateHttp2Request(
+  input: NodeAuthBindingProbeInput,
+  request: ReadOnlyAuthProbeInput["request"],
+  now: NodeAuthBindingProbeDependencies["now"],
+): Promise<void> {
+  const localValidationFetch: typeof globalThis.fetch = async () => {
+    throw new Error("Local read-only validation completed");
+  };
+  await runReadOnlyAuthProbe({
+    authEpoch: input.authEpoch,
+    mode: "node-web-cookie",
+    request,
+    auth: input.auth,
+  }, {
+    fetch: localValidationFetch,
+    ...(now === undefined ? {} : { now }),
+  });
 }
 
 function safeHttp2Headers(
@@ -183,7 +175,9 @@ async function runHttp2(
   dependencies: NodeAuthBindingProbeDependencies,
 ): Promise<SafeAuthBindingObservation> {
   const request = requireMessagingRequest(input);
-  const { url, body } = decodeAllowlistedHttp2Request(request);
+  await validateHttp2Request(input, request, dependencies.now);
+  const url = new URL(request.url);
+  const body = new Uint8Array(Buffer.from(request.bodyBase64, "base64"));
   const headers = safeHttp2Headers(request, input.auth, url.pathname);
   const base = messagingObservation(
     input,
@@ -199,20 +193,30 @@ async function runHttp2(
     let settled = false;
     let session: ReturnType<typeof connect> | undefined;
     let stream: ReturnType<ReturnType<typeof connect>["request"]> | undefined;
+    let watchdog: ReturnType<typeof setTimeout> | undefined;
+    const attempt = (operation: () => void): void => {
+      try {
+        operation();
+      } catch {
+        // Cleanup failures must not prevent a sanitized observation.
+      }
+    };
     const closeResources = (): void => {
-      stream?.close();
-      stream?.destroy();
-      session?.close();
-      session?.destroy();
+      attempt(() => stream?.close());
+      attempt(() => stream?.destroy());
+      attempt(() => session?.close());
+      attempt(() => session?.destroy());
     };
     const finish = (result: Pick<SafeAuthBindingObservation, "status" | "transportError">): void => {
       if (settled) return;
       settled = true;
+      if (watchdog !== undefined) clearTimeout(watchdog);
       closeResources();
       resolve({ ...base, ...result });
     };
 
     try {
+      watchdog = setTimeout(() => finish({ transportError: "timeout" }), TIMEOUT_MS);
       session = connectHttp2(HTTP2_ORIGIN);
       session.once("error", (error) => finish({ transportError: transportErrorKind(error) }));
       stream = session.request(headers);

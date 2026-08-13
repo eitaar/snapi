@@ -66,7 +66,13 @@ describe("runNodeAuthBindingProbe", () => {
     session.destroy = vi.fn();
     const http2Connect = vi.fn(() => session);
 
-    const observation = await runNodeAuthBindingProbe(messagingInput("node-http2"), {
+    const observation = await runNodeAuthBindingProbe(messagingInput("node-http2", {
+      headers: {
+        accept: "application/grpc-web+proto",
+        "content-type": "application/grpc-web+proto",
+        "x-disallowed-sentinel": "private-header-value",
+      },
+    }), {
       http2Connect: http2Connect as never,
       now: () => new Date("2026-08-14T00:00:00.000Z"),
     });
@@ -78,7 +84,10 @@ describe("runNodeAuthBindingProbe", () => {
       ":authority": "web.snapchat.com",
       ":method": "POST",
       ":path": "/messagingcoreservice.MessagingCoreService/DeltaSync",
+      authorization: `Bearer ${tokenSentinel}`,
+      cookie: cookieSentinel,
     }));
+    expect(session.request.mock.calls[0]?.[0]).not.toHaveProperty("x-disallowed-sentinel");
     expect(observation).toMatchObject({ context: "node-http2", status: 401, protocol: "h2" });
     expect(session.close).toHaveBeenCalledOnce();
     expect(session.destroy).toHaveBeenCalledOnce();
@@ -157,5 +166,78 @@ describe("runNodeAuthBindingProbe", () => {
     expect(session.request).toHaveBeenCalledOnce();
     expect(session.close).toHaveBeenCalledOnce();
     expect(session.destroy).toHaveBeenCalledOnce();
+  });
+
+  it("uses one whole-call watchdog during HTTP/2 connection setup", async () => {
+    vi.useFakeTimers();
+    try {
+      const stream = new EventEmitter() as EventEmitter & { end: ReturnType<typeof vi.fn>; close: ReturnType<typeof vi.fn>; destroy: ReturnType<typeof vi.fn>; setTimeout: ReturnType<typeof vi.fn> };
+      stream.end = vi.fn();
+      stream.close = vi.fn();
+      stream.destroy = vi.fn();
+      stream.setTimeout = vi.fn();
+      const session = new EventEmitter() as EventEmitter & { request: ReturnType<typeof vi.fn>; close: ReturnType<typeof vi.fn>; destroy: ReturnType<typeof vi.fn> };
+      session.request = vi.fn(() => stream);
+      session.close = vi.fn();
+      session.destroy = vi.fn();
+      const http2Connect = vi.fn(() => session);
+
+      const pending = runNodeAuthBindingProbe(messagingInput("node-http2"), { http2Connect: http2Connect as never });
+      await vi.advanceTimersByTimeAsync(10_000);
+
+      await expect(pending).resolves.toMatchObject({ transportError: "timeout" });
+      expect(http2Connect).toHaveBeenCalledOnce();
+      expect(session.request).toHaveBeenCalledOnce();
+      expect(session.close).toHaveBeenCalledOnce();
+      expect(session.destroy).toHaveBeenCalledOnce();
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it("resolves a bounded stream error after every throwing cleanup method is attempted", async () => {
+    const stream = new EventEmitter() as EventEmitter & { end: () => void; close: ReturnType<typeof vi.fn>; destroy: ReturnType<typeof vi.fn>; setTimeout: ReturnType<typeof vi.fn> };
+    stream.close = vi.fn(() => { throw new Error("private cleanup failure"); });
+    stream.destroy = vi.fn(() => { throw new Error("private cleanup failure"); });
+    stream.setTimeout = vi.fn();
+    stream.end = () => stream.emit("error", Object.assign(new Error("private stream failure"), { code: "ECONNRESET" }));
+    const session = new EventEmitter() as EventEmitter & { request: ReturnType<typeof vi.fn>; close: ReturnType<typeof vi.fn>; destroy: ReturnType<typeof vi.fn> };
+    session.request = vi.fn(() => stream);
+    session.close = vi.fn(() => { throw new Error("private cleanup failure"); });
+    session.destroy = vi.fn(() => { throw new Error("private cleanup failure"); });
+    const http2Connect = vi.fn(() => session);
+
+    const observation = await runNodeAuthBindingProbe(messagingInput("node-http2"), { http2Connect: http2Connect as never });
+
+    expect(observation).toMatchObject({ transportError: "connection" });
+    expect(http2Connect).toHaveBeenCalledOnce();
+    expect(session.request).toHaveBeenCalledOnce();
+    expect(stream.close).toHaveBeenCalledOnce();
+    expect(stream.destroy).toHaveBeenCalledOnce();
+    expect(session.close).toHaveBeenCalledOnce();
+    expect(session.destroy).toHaveBeenCalledOnce();
+    expect(JSON.stringify(observation)).not.toContain("private");
+  });
+
+  it("resolves a bounded session error when cleanup throws without retrying", async () => {
+    const stream = new EventEmitter() as EventEmitter & { end: () => void; close: ReturnType<typeof vi.fn>; destroy: ReturnType<typeof vi.fn>; setTimeout: ReturnType<typeof vi.fn> };
+    stream.close = vi.fn();
+    stream.destroy = vi.fn();
+    stream.setTimeout = vi.fn();
+    const session = new EventEmitter() as EventEmitter & { request: ReturnType<typeof vi.fn>; close: ReturnType<typeof vi.fn>; destroy: ReturnType<typeof vi.fn> };
+    session.request = vi.fn(() => stream);
+    session.close = vi.fn(() => { throw new Error("private cleanup failure"); });
+    session.destroy = vi.fn(() => { throw new Error("private cleanup failure"); });
+    stream.end = () => session.emit("error", Object.assign(new Error("private session failure"), { code: "ECONNREFUSED" }));
+    const http2Connect = vi.fn(() => session);
+
+    const observation = await runNodeAuthBindingProbe(messagingInput("node-http2"), { http2Connect: http2Connect as never });
+
+    expect(observation).toMatchObject({ transportError: "connection" });
+    expect(http2Connect).toHaveBeenCalledOnce();
+    expect(session.request).toHaveBeenCalledOnce();
+    expect(session.close).toHaveBeenCalledOnce();
+    expect(session.destroy).toHaveBeenCalledOnce();
+    expect(JSON.stringify(observation)).not.toContain("private");
   });
 });
