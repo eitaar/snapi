@@ -1,6 +1,8 @@
+[CmdletBinding(PositionalBinding=$false)]
 param(
     [string]$HarPath,
-    [string]$AuthEpoch
+    [string]$AuthEpoch,
+    [Parameter(ValueFromRemainingArguments=$true)][object[]]$UnboundArguments
 )
 
 $ErrorActionPreference = 'Stop'
@@ -18,11 +20,11 @@ $AllowedCapturedHeaderNames = @(
     'cookie',
     'x-snapchat-client',
     'x-snapchat-user-agent',
-    'x-grpc-web',
     'x-user-agent'
 )
 $StaticHeaders = [ordered]@{
     'accept' = 'application/grpc-web+proto'
+    'content-type' = 'application/grpc-web+proto'
     'x-grpc-web' = '1'
 }
 
@@ -80,6 +82,12 @@ $endpointPath = $DefaultEndpointPath
 $requestBodyBytes = $null
 $requestBodySha256 = $null
 $safeHeaderNames = @()
+$AllowedBoundParameterNames = @('HarPath', 'AuthEpoch', 'UnboundArguments')
+
+if ((@($PSBoundParameters.Keys | Where-Object { $_ -notin $AllowedBoundParameterNames }).Count -gt 0) -or
+    ($null -ne $UnboundArguments -and $UnboundArguments.Count -gt 0)) {
+    Exit-SanitizedFailure -ResultAuthEpoch $null -EndpointPath $endpointPath -Status $null -RequestBodyBytes $null -RequestBodySha256 $null -SafeHeaderNames $safeHeaderNames -Category 'invalid-input'
+}
 
 if ([string]::IsNullOrWhiteSpace($AuthEpoch) -or
     $AuthEpoch.Length -gt 64 -or
@@ -200,6 +208,7 @@ $har.Dispose()
 
 try {
     $handler = [System.Net.Http.SocketsHttpHandler]::new()
+    $handler.AllowAutoRedirect = $false
     $client = [System.Net.Http.HttpClient]::new($handler)
     $client.DefaultRequestVersion = [Version]::new(3,0)
     $client.DefaultVersionPolicy = [System.Net.Http.HttpVersionPolicy]::RequestVersionExact
@@ -217,7 +226,7 @@ try {
 
     $message = [System.Net.Http.HttpRequestMessage]::new([System.Net.Http.HttpMethod]::Post, "$FixedOrigin$endpointPath")
     $content = [System.Net.Http.ByteArrayContent]::new($requestBodyBytes)
-    $content.Headers.ContentType = [System.Net.Http.Headers.MediaTypeHeaderValue]::Parse('application/grpc-web+proto')
+    $content.Headers.ContentType = [System.Net.Http.Headers.MediaTypeHeaderValue]::Parse($StaticHeaders['content-type'])
     $message.Content = $content
     foreach ($headerName in $forwardedHeaders.Keys) {
         if (-not $message.Headers.TryAddWithoutValidation($headerName, $forwardedHeaders[$headerName])) {
@@ -225,6 +234,9 @@ try {
         }
     }
     foreach ($staticHeaderName in $StaticHeaders.Keys) {
+        if ($staticHeaderName -eq 'content-type') {
+            continue
+        }
         if (-not $message.Headers.TryAddWithoutValidation($staticHeaderName, $StaticHeaders[$staticHeaderName])) {
             throw [InvalidOperationException]::new('static header rejected')
         }
