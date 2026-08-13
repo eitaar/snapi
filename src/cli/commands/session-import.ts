@@ -6,8 +6,7 @@ import { loadConfig, loadEnvironmentFile } from "../../config.js";
 import { AppError } from "../../errors.js";
 import { AccountLock } from "../../session/account-lock.js";
 import { loadSession } from "../../session/loader.js";
-import { parseSessionExport } from "../../session/schema.js";
-import { AtomicJsonStore } from "../../session/state-store.js";
+import { SealedSessionStore } from "../../session/sealed-store.js";
 import type { CliIo } from "../io.js";
 
 export interface SessionImportResult {
@@ -38,7 +37,7 @@ async function importDefault(path: string): Promise<{
     .acquire(config.accountId);
   try {
     const report = await new CompatibilityGuard(new AssetLoader(config.assetDir)).verify(session);
-    await new AtomicJsonStore(config.sessionFile, parseSessionExport).write(session);
+    await new SealedSessionStore(config.sessionFile).write(session);
     return {
       output: config.output,
       result: { buildId: report.buildId, assetCount: report.assets.length },

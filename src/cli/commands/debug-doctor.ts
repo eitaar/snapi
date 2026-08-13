@@ -8,8 +8,7 @@ import { CompatibilityGuard, SUPPORTED_ASSETS } from "../../compat/guard.js";
 import { loadConfig, loadEnvironmentFile, type AppConfig } from "../../config.js";
 import { AppError } from "../../errors.js";
 import { loadSession } from "../../session/loader.js";
-import { parseSessionExport } from "../../session/schema.js";
-import { AtomicJsonStore } from "../../session/state-store.js";
+import { SealedSessionStore } from "../../session/sealed-store.js";
 import type { SessionExport } from "../../session/types.js";
 import type { CliIo } from "../io.js";
 import type { EncryptedContent } from "../../runtime/content-types.js";
@@ -191,7 +190,7 @@ async function prepareRuntimeDoctor(): Promise<PreparedRuntimeDoctor> {
     throw new AppError("INVALID_CONFIG", "Set SNAP_LIVE_TESTS=1 to run the managed runtime gate");
   }
   const context: LiveContext = { config, session, reportAssets: [] };
-  const sessionStore = new AtomicJsonStore(config.sessionFile, parseSessionExport);
+  const sessionStore = new SealedSessionStore(config.sessionFile);
   const liveDependencies: LiveCheckDependencies = {
     refreshSession: async (current) => {
       const refreshed = await refreshSnapchatSession(current, {

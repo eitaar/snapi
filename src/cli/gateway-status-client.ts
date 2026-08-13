@@ -6,8 +6,7 @@ import { GatewayClient } from "../gateway/client.js";
 import type { GatewayStatus } from "../gateway/events.js";
 import { AccountLock } from "../session/account-lock.js";
 import { loadSession } from "../session/loader.js";
-import { parseSessionExport } from "../session/schema.js";
-import { AtomicJsonStore } from "../session/state-store.js";
+import { SealedSessionStore } from "../session/sealed-store.js";
 import { AuthProvider } from "../transport/auth-provider.js";
 import { refreshSnapchatSession } from "../transport/sso-auth-refresh.js";
 import type { ConfiguredGatewayStatusClient, GatewayStatusClient } from "./commands/gateway-status.js";
@@ -22,14 +21,14 @@ function assertSession(config: ReturnType<typeof loadConfig>, session: Session):
 export async function createConfiguredGatewayStatusClient(): Promise<ConfiguredGatewayStatusClient> {
   loadEnvironmentFile();
   const config = loadConfig();
-  const initialSession = applyCookieOverrides(await loadSession(config.sessionFile), {
+  const sessionStore = new SealedSessionStore(config.sessionFile);
+  const initialSession = applyCookieOverrides(await sessionStore.readOrMigrateLegacy(), {
     ...(config.cookieHeader === undefined ? {} : { cookieHeader: config.cookieHeader }),
     ...(config.ssoCookieHeader === undefined ? {} : { ssoCookieHeader: config.ssoCookieHeader }),
   });
   assertSession(config, initialSession);
   const lock = await new AccountLock(join(dirname(config.sessionFile), "locks")).acquire(config.accountId);
   try {
-    const sessionStore = new AtomicJsonStore(config.sessionFile, parseSessionExport);
     const auth = new AuthProvider(initialSession, {
       refresh: (session) => refreshSnapchatSession(session, {
         attestation: (value) => finalizeWebAttestation(value.accountId, { assetDir: config.assetDir }),

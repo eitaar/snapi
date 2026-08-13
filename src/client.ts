@@ -13,9 +13,7 @@ import { MessagingClient, type SendResult, type SendTextInput } from "./messagin
 import { MediaClient, type SendPhotoSnapInput } from "./media/client.js";
 import { ContentRuntimeClient } from "./runtime/worker-client.js";
 import { AccountLock, type AccountLockHandle } from "./session/account-lock.js";
-import { loadSession } from "./session/loader.js";
-import { parseSessionExport } from "./session/schema.js";
-import { AtomicJsonStore } from "./session/state-store.js";
+import { SealedSessionStore } from "./session/sealed-store.js";
 import type { SessionExport } from "./session/types.js";
 import { AuthProvider } from "./transport/auth-provider.js";
 import { GrpcWebClient } from "./transport/grpc-client.js";
@@ -90,7 +88,8 @@ function mergeCryptoState(session: SessionExport, state: CryptoStateExport): Ses
 }
 
 async function composeDefault(config: AppConfig): Promise<SnapchatClientComponents> {
-  const initialSession = await loadSession(config.sessionFile);
+  const sessionStore = new SealedSessionStore(config.sessionFile);
+  const initialSession = await sessionStore.readOrMigrateLegacy();
   assertConfiguredSession(config, initialSession);
   const manualSsoCookieHeader = config.ssoCookieHeader ?? config.cookieHeader;
   const authSession = applyCookieOverrides(initialSession, {
@@ -101,7 +100,6 @@ async function composeDefault(config: AppConfig): Promise<SnapchatClientComponen
   let runtime: ContentRuntimeClient | undefined;
   try {
     await new CompatibilityGuard(new AssetLoader(config.assetDir)).verify(authSession);
-    const sessionStore = new AtomicJsonStore(config.sessionFile, parseSessionExport);
     const auth = new AuthProvider(authSession, {
       refresh: (session) => refreshSnapchatSession(session, {
         attestation: (value) => finalizeWebAttestation(value.accountId, { assetDir: config.assetDir }),

@@ -3,8 +3,7 @@ import { loadConfig, loadEnvironmentFile } from "../../config.js";
 import { AppError } from "../../errors.js";
 import { enrichSessionWithHarAuth } from "../../session/har-auth.js";
 import { loadSession } from "../../session/loader.js";
-import { parseSessionExport } from "../../session/schema.js";
-import { AtomicJsonStore } from "../../session/state-store.js";
+import { SealedSessionStore } from "../../session/sealed-store.js";
 import type { CliIo } from "../io.js";
 
 export interface SessionRefreshHarResult {
@@ -34,7 +33,7 @@ async function executeDefault(harPath: string): Promise<{
     throw new AppError("INVALID_SESSION_EXPORT", "Unable to read a valid HAR export");
   }
   const refreshed = enrichSessionWithHarAuth(session, har);
-  await new AtomicJsonStore(config.sessionFile, parseSessionExport).write(refreshed);
+  await new SealedSessionStore(config.sessionFile).write(refreshed);
   return {
     output: config.output,
     result: { buildId: refreshed.buildId, refreshedAt: refreshed.exportedAt },

@@ -243,6 +243,24 @@ describe("SnapchatClient", () => {
         }
       },
     }));
+    vi.doMock("../src/session/sealed-store.js", () => ({
+      SealedSessionStore: class {
+        async readOrMigrateLegacy() {
+          events.push("store.read");
+          return persisted;
+        }
+
+        async read() {
+          events.push("store.read");
+          return persisted;
+        }
+
+        async write(value: typeof persisted) {
+          events.push("store.write");
+          persisted = value;
+        }
+      },
+    }));
     vi.doMock("../src/runtime/worker-client.js", () => ({
       ContentRuntimeClient: class {
         initialize = runtime.initialize;
