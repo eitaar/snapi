@@ -11,7 +11,42 @@ const READ_ONLY_MESSAGING_PATHS = new Set([
 ]);
 const MESSAGING_PATH_PREFIX = "/messagingcoreservice.MessagingCoreService/";
 const TOKEN_PATTERN = /^[A-Za-z0-9._~-]{64,8192}$/;
-const SAFE_HTTP_PROTOCOLS = new Set(["h2", "h3", "http/1.1"]);
+const SAFE_GATEWAY_REQUEST_HEADERS = new Set([
+  "accept-language",
+  "cache-control",
+  "connection",
+  "cookie",
+  "origin",
+  "pragma",
+  "sec-ch-ua",
+  "sec-ch-ua-mobile",
+  "sec-ch-ua-platform",
+  "sec-websocket-extensions",
+  "sec-websocket-key",
+  "sec-websocket-protocol",
+  "sec-websocket-version",
+  "upgrade",
+  "user-agent",
+]);
+const SAFE_MESSAGING_REQUEST_HEADERS = new Set([
+  "accept",
+  "authorization",
+  "caller-source",
+  "content-type",
+  "cookie",
+  "dnt",
+  "mcs-cof-ids-bin",
+  "origin",
+  "prefer",
+  "referer",
+  "sec-ch-ua",
+  "sec-ch-ua-mobile",
+  "sec-ch-ua-platform",
+  "user-agent",
+  "x-grpc-web",
+  "x-snap-client-user-agent",
+  "x-user-agent",
+]);
 
 export interface AuthBindingHarSummary {
   readonly buildId: "8dd50222";
@@ -95,11 +130,12 @@ function headerValue(headers: unknown, name: string): string | undefined {
   return undefined;
 }
 
-function headerNames(headers: unknown): readonly string[] {
+function headerNames(headers: unknown, allowed: ReadonlySet<string>): readonly string[] {
   if (!Array.isArray(headers)) return [];
   return [...new Set(headers.flatMap((candidate) => {
     const name = record(candidate)?.name;
-    return typeof name === "string" && name.trim() !== "" ? [name.toLowerCase()] : [];
+    const normalized = typeof name === "string" ? name.toLowerCase() : undefined;
+    return normalized !== undefined && allowed.has(normalized) ? [normalized] : [];
   }))].sort();
 }
 
@@ -145,28 +181,59 @@ function isReadOnlyMessagingSuccess(entry: HarEntry): boolean {
 
 function safeProtocols(entries: readonly HarEntry[]): readonly string[] {
   return [...new Set(entries.flatMap((entry) => {
-    const protocol = entry.httpVersion?.toLowerCase();
-    return protocol !== undefined && SAFE_HTTP_PROTOCOLS.has(protocol) ? [protocol] : [];
+    const protocol = normalizeHttpVersion(entry.httpVersion);
+    return protocol === undefined ? [] : [protocol];
   }))].sort();
 }
 
 function requestBody(entry: HarEntry): Uint8Array | undefined {
-  const text = record(entry.request.postData)?.text;
-  return typeof text === "string" ? new TextEncoder().encode(text) : undefined;
+  const postData = record(entry.request.postData);
+  const text = postData?.text;
+  if (postData === undefined || typeof text !== "string") return undefined;
+  if (postData.encoding === undefined) return new TextEncoder().encode(text);
+  if (postData.encoding !== "base64" || !isBase64(text)) return undefined;
+  return new Uint8Array(Buffer.from(text, "base64"));
 }
 
 function latest(entries: readonly HarEntry[]): HarEntry | undefined {
   return entries.at(-1);
 }
 
-function buildIsPinned(har: Record<string, unknown>): boolean {
-  return record(record(har.log)?.creator)?.version === BUILD_ID;
+function isBase64(value: string): boolean {
+  return value.length % 4 === 0 &&
+    /^(?:[A-Za-z0-9+/]{4})*(?:[A-Za-z0-9+/]{2}==|[A-Za-z0-9+/]{3}=)?$/.test(value);
+}
+
+function normalizeHttpVersion(value: string | undefined): "h2" | "h3" | "http/1.1" | undefined {
+  switch (value?.trim().toLowerCase()) {
+    case "h2":
+    case "http/2":
+    case "http/2.0":
+      return "h2";
+    case "h3":
+    case "http/3":
+    case "http/3.0":
+      return "h3";
+    case "http/1.1":
+      return "http/1.1";
+    default:
+      return undefined;
+  }
+}
+
+function buildIsPinned(entries: readonly HarEntry[]): boolean {
+  return entries.some((entry) => {
+    const url = urlOf(entry);
+    return entry.request.method === "GET" && entry.response?.status === 200 &&
+      url?.origin === MESSAGING_ORIGIN && url.pathname === "/web/version.json" &&
+      url.searchParams.get("version") === BUILD_ID;
+  });
 }
 
 export function summarizeAuthBindingHar(input: string | Uint8Array): AuthBindingHarSummary {
   const har = parseHar(input);
-  if (!buildIsPinned(har)) throw invalid("HAR build is unsupported");
   const entries = entriesFrom(har);
+  if (!buildIsPinned(entries)) throw invalid("HAR build is unsupported");
   const gateways = entries.filter(isGatewaySuccess);
   const messages = entries.filter(isReadOnlyMessagingSuccess);
   const writes = entries.filter((entry) => isMessaging(entry) &&
@@ -183,7 +250,7 @@ export function summarizeAuthBindingHar(input: string | Uint8Array): AuthBinding
   }
 
   const body = requestBody(messaging);
-  const gatewayHeaders = headerNames(gateway.request.headers);
+  const gatewayHeaders = headerNames(gateway.request.headers, SAFE_GATEWAY_REQUEST_HEADERS);
   return {
     buildId: BUILD_ID,
     gateway101Count: gateways.length,
@@ -196,7 +263,7 @@ export function summarizeAuthBindingHar(input: string | Uint8Array): AuthBinding
     gatewayHasCookie: gatewayHeaders.includes("cookie"),
     gatewayHasAuthorization: gatewayHeaders.includes("authorization"),
     gatewayRequestHeaderNames: gatewayHeaders,
-    messagingRequestHeaderNames: headerNames(messaging.request.headers),
+    messagingRequestHeaderNames: headerNames(messaging.request.headers, SAFE_MESSAGING_REQUEST_HEADERS),
     gatewayProtocols: ["snap-ws-auth"],
     messagingProtocols: safeProtocols(messages),
     ...(gateway.startedDateTime === undefined ? {} : { gatewayStartedAt: gateway.startedDateTime }),
