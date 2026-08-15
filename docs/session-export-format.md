@@ -31,6 +31,16 @@ The capture mechanism is intentionally outside this repository. It must run in
 an operator-controlled, freshly authenticated Snapchat Web page and serialize
 the fields below without changing their values.
 
+## Profile invariants
+
+Each multi-account profile references exactly one sealed session file plus one
+asset directory. The profile is metadata only: account identity and build
+identity are always derived from the referenced sealed session, not copied into
+the profile record itself.
+
+Selected-profile import/export rejects account mismatches, build mismatches,
+and destination path mismatches before persistence or authenticated traffic.
+
 ## Top-level fields
 
 | Field | Type | Meaning |

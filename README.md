@@ -54,6 +54,60 @@ is required.
 
 ## Commands
 
+### Multi-account profiles
+
+Multi-account profile selection is explicit and offline by default. Use
+`snaapi --account <alias> ...` to select one registered profile for a command,
+or set `SNAAPI_ACCOUNT` for a per-shell default. Resolution precedence is:
+explicit `--account`, then `SNAAPI_ACCOUNT`, then the legacy environment-based
+configuration with `SNAP_SESSION_FILE`, `SNAP_ASSET_DIR`, `SNAP_ACCOUNT_ID`,
+and `SNAP_BUILD_ID`.
+
+Profiles live under `private/accounts` by default. Set `SNAAPI_ACCOUNTS_DIR`
+to move that profile root. Profile files contain metadata only: the sealed
+session and build assets stay at the paths you register, and the account/build
+identity is derived from the sealed session instead of being copied into the
+profile JSON.
+
+To register an existing sealed session and its matching asset directory:
+
+```powershell
+snaapi account add main `
+  --session private/da4d-session.json `
+  --asset-dir private/da4d-assets
+
+snaapi --account main session check
+snaapi --account main friends list --easy
+```
+
+If you prefer a shell-local default instead of repeating the flag:
+
+```powershell
+$env:SNAAPI_ACCOUNT="main"
+snaapi session check
+```
+
+To bootstrap a new account, keep using the legacy build/session export flow
+first, then register the resulting sealed session as a profile:
+
+```powershell
+$env:SNAP_BUILD_ID="da4d065e"
+$env:SNAP_ASSET_DIR="C:\Users\eitab\Documents\js\snaapi\private\da4d-assets"
+snaapi session export-cdp --har private\fresh-account.har --output private\account-session.json
+snaapi account add second --session private\account-session.json --asset-dir private\da4d-assets
+snaapi --account second session check
+```
+
+HAR files and session files are secrets. Keep them under `private/`, restrict
+them to the operator account, and never paste them into logs or chat. Account
+profiles are metadata only and do not copy Cookie headers, bearer tokens, or
+messaging key state. `snaapi account add` and `snaapi account list` are
+offline registration/inspection commands; validating registration does not
+require a live Chat or Snap send.
+
+If you already use the `snap` alias, it continues to work; the examples above
+use `snaapi` only to make the account-selection flow explicit.
+
 ```powershell
 node dist/cli/index.js session check
 node dist/cli/index.js session login
