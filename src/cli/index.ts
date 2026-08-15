@@ -117,8 +117,13 @@ export async function main(
     io.stderr("Usage: snaapi account <add|list|show>");
     return 2;
   };
-  if (inputArgv.length >= 1 && inputArgv[0] === "account") {
-    return runAccountCommand(inputArgv);
+  const accountArgv = inputArgv[0] === "account"
+    ? inputArgv
+    : inputArgv[0] === "--account" && inputArgv[2] === "account"
+      ? inputArgv.slice(2)
+      : undefined;
+  if (accountArgv !== undefined) {
+    return runAccountCommand(accountArgv);
   }
   let parsedGlobal;
   try {

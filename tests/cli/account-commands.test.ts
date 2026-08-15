@@ -280,4 +280,26 @@ describe("account command routing", () => {
       output: "human",
     });
   });
+
+  it.each(["main", "../invalid"])(
+    "routes account management before validating explicit --account %s",
+    async (accountAlias) => {
+      const output = io();
+      const resolveConfig = vi.fn(async () => resolvedConfig);
+      const runAccountListRoute = vi.fn(async () => 0);
+
+      const code = await main(["--account", accountAlias, "account", "list"], output.value, {
+        env: { SNAAPI_ACCOUNT: "../invalid-env" },
+        resolveConfig,
+        runAccountList: runAccountListRoute,
+      });
+
+      expect(code).toBe(0);
+      expect(resolveConfig).not.toHaveBeenCalled();
+      expect(runAccountListRoute).toHaveBeenCalledWith([], output.value, {
+        env: { SNAAPI_ACCOUNT: "../invalid-env" },
+        output: "human",
+      });
+    },
+  );
 });
