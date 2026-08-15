@@ -1,7 +1,9 @@
 export { main } from "./cli/index.js";
 export { createProcessIo, type CliIo } from "./cli/io.js";
+export { AccountProfileStore, assertAccountAlias } from "./accounts/profile-store.js";
+export type { AccountProfileRecord, AccountProfileSummary, AccountProfileV1 } from "./accounts/types.js";
 export { SnapchatClient, type SnapchatClientDependencies } from "./client.js";
-export { loadConfig, loadEnvironmentFile, type AppConfig } from "./config.js";
+export { loadConfig, loadEnvironmentFile, resolveAppConfig, type AppConfig, type ResolveAppConfigOptions } from "./config.js";
 export { AppError, asAppError, type ErrorCode } from "./errors.js";
 export { redact } from "./logging/redact.js";
 export { loadSession } from "./session/loader.js";

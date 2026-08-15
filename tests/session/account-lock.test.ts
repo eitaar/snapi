@@ -26,6 +26,37 @@ describe("AccountLock", () => {
     await second.release();
   });
 
+  it("allows different account IDs to hold locks in a shared directory", async () => {
+    const dir = await mkdtemp(join(tmpdir(), "snap-lock-shared-"));
+    const locks = new AccountLock(join(dir, ".locks"));
+    const first = await locks.acquire("account-one");
+    const second = await locks.acquire("account-two");
+
+    await expect(locks.inspect("account-one")).resolves.toMatchObject({
+      accountId: "account-one",
+    });
+    await expect(locks.inspect("account-two")).resolves.toMatchObject({
+      accountId: "account-two",
+    });
+
+    await second.release();
+    await first.release();
+  });
+
+  it("contends when two aliases resolve to the same account in a shared directory", async () => {
+    const dir = await mkdtemp(join(tmpdir(), "snap-lock-contention-"));
+    const locks = new AccountLock(join(dir, ".locks"));
+    const first = await locks.acquire("shared-account");
+
+    try {
+      await expect(locks.acquire("shared-account")).rejects.toMatchObject({
+        code: "CRYPTO_STATE_CONFLICT",
+      });
+    } finally {
+      await first.release();
+    }
+  });
+
   it("rejects account IDs that could escape the lock directory", async () => {
     const dir = await mkdtemp(join(tmpdir(), "snap-lock-path-"));
     const locks = new AccountLock(join(dir, "locks"));
