@@ -6,6 +6,9 @@ import { SnapchatClient } from "../client.js";
 import { loadEnvironmentFile, resolveAppConfig, type AppConfig } from "../config.js";
 import { AppError } from "../errors.js";
 import { redact } from "../logging/redact.js";
+import type { AccountAddDependencies } from "./commands/account-add.js";
+import type { AccountListDependencies } from "./commands/account-list.js";
+import type { AccountShowDependencies } from "./commands/account-show.js";
 import type { ConfiguredChatSendClient } from "./commands/chat-send.js";
 import type { ConfiguredGatewayStatusClient } from "./commands/gateway-status.js";
 import type { ConfiguredChatWatchClient } from "./commands/chat-watch.js";
@@ -20,6 +23,21 @@ export type ConfiguredCliClient = ConfiguredChatSendClient & ConfiguredGatewaySt
   ConfiguredChatWatchClient & ConfiguredSnapWatchClient & ConfiguredFriendsListClient;
 
 export interface CliDependencies {
+  readonly runAccountAdd?: (
+    argv: readonly string[],
+    io: CliIo,
+    dependencies?: AccountAddDependencies,
+  ) => Promise<number>;
+  readonly runAccountList?: (
+    argv: readonly string[],
+    io: CliIo,
+    dependencies?: AccountListDependencies,
+  ) => Promise<number>;
+  readonly runAccountShow?: (
+    argv: readonly string[],
+    io: CliIo,
+    dependencies?: AccountShowDependencies,
+  ) => Promise<number>;
   readonly runRuntimeDoctor?: (io: CliIo) => Promise<number>;
   readonly runDebugAuthRenewal?: (io: CliIo) => Promise<number>;
   readonly runSessionCheck?: (io: CliIo) => Promise<number>;
@@ -95,6 +113,34 @@ export async function main(
     }
     return configPromise;
   };
+  if (argv.length >= 1 && argv[0] === "account") {
+    const accountEnv = dependencies.env ?? process.env;
+    const commandDependencies = {
+      ...(accountEnv.SNAAPI_ACCOUNTS_DIR === undefined ? {} : { accountsDir: accountEnv.SNAAPI_ACCOUNTS_DIR }),
+      env: accountEnv,
+      output: accountEnv.SNAP_OUTPUT === "json" ? "json" as const : "human" as const,
+    };
+    try {
+      if (argv[1] === "add") {
+        const runAccountAdd = dependencies.runAccountAdd ?? (await import("./commands/account-add.js")).runAccountAdd;
+        return await runAccountAdd(argv.slice(2), io, commandDependencies);
+      }
+      if (argv[1] === "list") {
+        const runAccountList = dependencies.runAccountList ??
+          (await import("./commands/account-list.js")).runAccountList;
+        return await runAccountList(argv.slice(2), io, commandDependencies);
+      }
+      if (argv[1] === "show") {
+        const runAccountShow = dependencies.runAccountShow ??
+          (await import("./commands/account-show.js")).runAccountShow;
+        return await runAccountShow(argv.slice(2), io, commandDependencies);
+      }
+    } catch (error) {
+      return emitError(io, error);
+    }
+    io.stderr("Usage: snaapi account <add|list|show>");
+    return 2;
+  }
   if (argv.length >= 2 && argv[0] === "debug" && argv[1] === "auth-binding") {
     try {
       const runDebugAuthBinding = (await import("./commands/debug-auth-binding.js")).runDebugAuthBinding;
@@ -260,7 +306,7 @@ export async function main(
     }
   }
 
-  io.stderr("Usage: snaapi <session|chat|snap|friends|gateway|debug>");
+  io.stderr("Usage: snaapi <account|session|chat|snap|friends|gateway|debug>");
   return 2;
 }
 
