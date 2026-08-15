@@ -152,6 +152,31 @@ describe("account list", () => {
     expect(output.stdout.join("\n")).not.toContain("sessionFile");
     expect(output.stdout.join("\n")).not.toContain("assetDir");
   });
+
+  it("maps a session that disappears before loading to missing-session", async () => {
+    const output = io();
+
+    const code = await runAccountList(["--json"], output.value, {
+      output: "json",
+      store: {
+        list: async () => [{ alias: "main", status: "ready" }],
+        read: async () => ({
+          alias: "main",
+          sessionFile: "C:/repo/private/main.json",
+          assetDir: "C:/repo/private/da4d-assets",
+        }),
+      },
+      loadSession: async () => {
+        throw Object.assign(new Error("session disappeared"), { code: "ENOENT" });
+      },
+    });
+
+    expect(code).toBe(0);
+    expect(JSON.parse(output.stdout[0]!)).toEqual({
+      type: "accounts.list",
+      accounts: [{ alias: "main", status: "missing-session" }],
+    });
+  });
 });
 
 describe("account show", () => {
@@ -233,6 +258,25 @@ describe("account command routing", () => {
     expect(runAccountListRoute).toHaveBeenCalledWith([], output.value, {
       accountsDir: "C:/custom/accounts",
       env: { SNAAPI_ACCOUNTS_DIR: "C:/custom/accounts" },
+      output: "human",
+    });
+  });
+
+  it("routes account management despite an invalid SNAAPI_ACCOUNT", async () => {
+    const output = io();
+    const resolveConfig = vi.fn(async () => resolvedConfig);
+    const runAccountListRoute = vi.fn(async () => 0);
+
+    const code = await main(["account", "list"], output.value, {
+      env: { SNAAPI_ACCOUNT: "../invalid" },
+      resolveConfig,
+      runAccountList: runAccountListRoute,
+    });
+
+    expect(code).toBe(0);
+    expect(resolveConfig).not.toHaveBeenCalled();
+    expect(runAccountListRoute).toHaveBeenCalledWith([], output.value, {
+      env: { SNAAPI_ACCOUNT: "../invalid" },
       output: "human",
     });
   });

@@ -89,31 +89,7 @@ export async function main(
     io.stdout(io.version);
     return 0;
   }
-  let parsedGlobal;
-  try {
-    parsedGlobal = parseGlobalCliOptions(inputArgv, dependencies.env ?? process.env);
-  } catch (error) {
-    return emitError(io, error);
-  }
-  const argv = parsedGlobal.argv;
-  let configPromise: Promise<AppConfig> | undefined;
-  const config = (): Promise<AppConfig> => {
-    if (configPromise === undefined) {
-      if (dependencies.resolveConfig !== undefined) {
-        configPromise = dependencies.resolveConfig(parsedGlobal.accountAlias);
-      } else {
-        if (dependencies.env === undefined) {
-          loadEnvironmentFile();
-        }
-        configPromise = resolveAppConfig({
-          ...(parsedGlobal.accountAlias === undefined ? {} : { accountAlias: parsedGlobal.accountAlias }),
-          ...(dependencies.env === undefined ? {} : { env: dependencies.env }),
-        });
-      }
-    }
-    return configPromise;
-  };
-  if (argv.length >= 1 && argv[0] === "account") {
+  const runAccountCommand = async (argv: readonly string[]): Promise<number> => {
     const accountEnv = dependencies.env ?? process.env;
     const commandDependencies = {
       ...(accountEnv.SNAAPI_ACCOUNTS_DIR === undefined ? {} : { accountsDir: accountEnv.SNAAPI_ACCOUNTS_DIR }),
@@ -140,6 +116,36 @@ export async function main(
     }
     io.stderr("Usage: snaapi account <add|list|show>");
     return 2;
+  };
+  if (inputArgv.length >= 1 && inputArgv[0] === "account") {
+    return runAccountCommand(inputArgv);
+  }
+  let parsedGlobal;
+  try {
+    parsedGlobal = parseGlobalCliOptions(inputArgv, dependencies.env ?? process.env);
+  } catch (error) {
+    return emitError(io, error);
+  }
+  const argv = parsedGlobal.argv;
+  let configPromise: Promise<AppConfig> | undefined;
+  const config = (): Promise<AppConfig> => {
+    if (configPromise === undefined) {
+      if (dependencies.resolveConfig !== undefined) {
+        configPromise = dependencies.resolveConfig(parsedGlobal.accountAlias);
+      } else {
+        if (dependencies.env === undefined) {
+          loadEnvironmentFile();
+        }
+        configPromise = resolveAppConfig({
+          ...(parsedGlobal.accountAlias === undefined ? {} : { accountAlias: parsedGlobal.accountAlias }),
+          ...(dependencies.env === undefined ? {} : { env: dependencies.env }),
+        });
+      }
+    }
+    return configPromise;
+  };
+  if (argv.length >= 1 && argv[0] === "account") {
+    return runAccountCommand(argv);
   }
   if (argv.length >= 2 && argv[0] === "debug" && argv[1] === "auth-binding") {
     try {

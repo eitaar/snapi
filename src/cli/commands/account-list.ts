@@ -28,6 +28,10 @@ function resolveOutput(json: boolean, fallback: "human" | "json" = "human"): "hu
   return json ? "json" : fallback;
 }
 
+function isMissingFile(error: unknown): boolean {
+  return error instanceof Error && "code" in error && error.code === "ENOENT";
+}
+
 async function listDefault(dependencies: AccountListDependencies): Promise<readonly AccountListEntry[]> {
   const cwd = dependencies.cwd ?? process.cwd();
   const accountsDir = dependencies.accountsDir
@@ -50,8 +54,11 @@ async function listDefault(dependencies: AccountListDependencies): Promise<reado
       } else {
         accounts.push({ alias: summary.alias, buildId: session.buildId, status: "ready" });
       }
-    } catch {
-      accounts.push({ alias: summary.alias, status: "invalid" });
+    } catch (error) {
+      accounts.push({
+        alias: summary.alias,
+        status: isMissingFile(error) ? "missing-session" : "invalid",
+      });
     }
   }
   return accounts;
