@@ -9,6 +9,7 @@ import type {
   MessagingStateExport,
   SessionExport,
 } from "./types.js";
+import { isSupportedBuildId } from "../builds.js";
 
 function invalid(path: string, reason: string): never {
   throw new AppError("INVALID_SESSION_EXPORT", "Session export validation failed", {
@@ -192,7 +193,8 @@ function parseMessagingState(
 export function parseSessionExport(value: unknown): SessionExport {
   const session = objectAt(value, "$");
   if (session.formatVersion !== 1) invalid("formatVersion", "expected version 1");
-  if (session.buildId !== "8dd50222") invalid("buildId", "unsupported build");
+  if (!isSupportedBuildId(session.buildId)) invalid("buildId", "unsupported build");
+  const buildId = session.buildId;
   const exportedAt = stringAt(session.exportedAt, "exportedAt");
   if (
     !/^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}(?:\.\d{3})?Z$/.test(exportedAt) ||
@@ -204,7 +206,7 @@ export function parseSessionExport(value: unknown): SessionExport {
   const parsed: SessionExport = {
     formatVersion: 1,
     accountId: stringAt(session.accountId, "accountId"),
-    buildId: "8dd50222",
+    buildId,
     exportedAt,
     auth: {
       httpToken: stringAt(auth.httpToken, "auth.httpToken"),

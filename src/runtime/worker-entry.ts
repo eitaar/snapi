@@ -1,6 +1,7 @@
 import { parentPort, workerData } from "node:worker_threads";
 import { readFile } from "node:fs/promises";
 import { join } from "node:path";
+import { getBuildProfile } from "../builds.js";
 import { AppError } from "../errors.js";
 import { redact } from "../logging/redact.js";
 import { parseSessionExport } from "../session/schema.js";
@@ -128,20 +129,21 @@ async function initialize(request: Extract<RuntimeRequest, { method: "initialize
     throw new AppError("INVALID_CONFIG", "Worker asset directory is required");
   }
   const session = parseSessionExport(request.session);
+  const profile = getBuildProfile(session.buildId);
   messagingInitialization.reset();
   let initializationStage = "browser-state";
   installedGlobals = installBrowserGlobals({
     origin: "https://www.snapchat.com",
-    userAgent: "Mozilla/5.0 SnapchatWeb/8dd50222",
+    userAgent: profile.webUserAgent,
     localStorage: session.localStorage,
   });
   try {
     await importIndexedDbSnapshot(session.indexedDb, installedGlobals.indexedDB);
     initializationStage = "asset-verification";
     const loader = new AssetLoader(data.assetDir);
-    await new CompatibilityGuard(loader).verify(session);
+    await new CompatibilityGuard(loader, undefined, profile).verify(session);
     const nextPhotoBuilder = new OfficialPhotoContentBuilder(
-      await readFile(join(data.assetDir, "41f8a232e0dafca526c7.js"), "utf8"),
+      await readFile(join(data.assetDir, profile.officialWorker.mainAsset), "utf8"),
     );
     const nextPhotoRequestAuth = new RuntimeRequestAuth(session);
     const mediaGrpc = new GrpcWebClient({
@@ -211,6 +213,7 @@ async function initialize(request: Extract<RuntimeRequest, { method: "initialize
     };
     const nextOfficialRuntime = new OfficialWorkerClient({
       assetDir: data.assetDir,
+      buildId: session.buildId,
       allowNetwork: data.allowNetwork === true,
       contentDelegate,
       conversationDelegate,
@@ -236,7 +239,7 @@ async function initialize(request: Extract<RuntimeRequest, { method: "initialize
     officialRuntime = nextOfficialRuntime;
     photoBuilder = nextPhotoBuilder;
     photoRequestAuth = nextPhotoRequestAuth;
-    return { buildId: "8dd50222", initializedAt: new Date().toISOString() };
+    return { buildId: session.buildId, initializedAt: new Date().toISOString() };
   } catch (error) {
     installedGlobals.restore();
     installedGlobals = undefined;

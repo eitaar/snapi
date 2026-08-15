@@ -1,11 +1,11 @@
 #!/usr/bin/env node
 
 import { createRequire } from "node:module";
-import { pathToFileURL } from "node:url";
 import { SnapchatClient } from "../client.js";
 import { loadEnvironmentFile, resolveAppConfig, type AppConfig } from "../config.js";
 import { AppError } from "../errors.js";
 import { redact } from "../logging/redact.js";
+import { isCliEntryPoint } from "./entry-point.js";
 import type { AccountAddDependencies } from "./commands/account-add.js";
 import type { AccountListDependencies } from "./commands/account-list.js";
 import type { AccountShowDependencies } from "./commands/account-show.js";
@@ -69,6 +69,7 @@ function exitCode(error: AppError): number {
   if (
     error.code === "INVALID_CONFIG" ||
     error.code === "INVALID_SESSION_EXPORT" ||
+    error.code === "SESSION_REEXPORT_REQUIRED" ||
     error.code === "UNSUPPORTED_BUILD" ||
     error.code === "CRYPTO_STATE_CONFLICT"
   ) return 3;
@@ -362,7 +363,7 @@ function packageVersion(): string {
 }
 
 const entryPath = process.argv[1];
-if (entryPath !== undefined && pathToFileURL(entryPath).href === import.meta.url) {
+if (isCliEntryPoint(entryPath, import.meta.url)) {
   const controller = new AbortController();
   const abort = () => controller.abort();
   process.once("SIGINT", abort);

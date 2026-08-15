@@ -2,8 +2,11 @@
 
 Experimental Node.js/TypeScript CLI for one operator-controlled Snapchat Web
 session. It executes the pinned Snapchat JavaScript/WASM runtime to create
-protected message envelopes. The current supported Web build is only
-`8dd50222`.
+protected message envelopes. The CLI has build-specific runtime profiles for
+`8dd50222` and `da4d065e`. The da4d profile is verified offline against the
+captured JavaScript/WASM assets and official Worker bridge; live use still
+requires a matching da4d session export with its own browser-managed
+messaging state.
 
 This uses an undocumented private API. Snapchat can change the bundle,
 authentication, protocol, or account policy at any time. Use only managed test
@@ -16,7 +19,7 @@ spoofs browser-managed session keys.
 - Node.js 24 or newer
 - A session export from an already logged-in Snapchat Web session (for account,
   build, and runtime state)
-- The exact four pinned assets under `private/assets/`
+- The exact four pinned assets for the selected build under `private/`
 - A fresh HAR containing successful Messaging, Gateway, accounts SSO, and
   `/web-chat-session/refresh` traffic from the same login epoch
 
@@ -27,8 +30,14 @@ Copy-Item .env.example .env
 ```
 
 Set `SNAP_SESSION_FILE`, `SNAP_ASSET_DIR`, `SNAP_ACCOUNT_ID`, and
-`SNAP_BUILD_ID=8dd50222` in `.env`. Keep `.env`, `private/`, HAR files, assets,
+`SNAP_BUILD_ID` to either `8dd50222` or `da4d065e` in `.env`. Keep `.env`, `private/`, HAR files, assets,
 and images out of source control.
+
+Build selection is strict: the configured build, session export, assets, and
+HAR build marker must match. Do not copy assets between build profiles. The
+da4d runtime can be smoke-tested offline from `private/da4d-assets`; a HAR
+alone is not a messaging session export and cannot supply the persisted
+login-time E2EE state required for live Chat/Snap operations.
 
 For a short-lived manual browser-cookie diagnostic, set `SNAP_COOKIE_HEADER`
 to the Cookie header copied from DevTools. Set `SNAP_SSO_COOKIE_HEADER`
@@ -53,6 +62,10 @@ dependency. If renewal rejects the exported login context, a fresh login HAR
 is required.
 
 ## Commands
+
+When this private package is linked locally with `npm link`, both `snap` and
+`snaapi` invoke the same CLI. The examples below use the shorter legacy name;
+`snaapi` may be substituted in every command.
 
 ### Multi-account profiles
 
@@ -113,6 +126,7 @@ node dist/cli/index.js session check
 node dist/cli/index.js session login
 node dist/cli/index.js session import private/fresh-session.json
 node dist/cli/index.js session refresh-har private/fresh.har
+node dist/cli/index.js session export-cdp --har private/fresh.har --output private/browser-session.json
 node dist/cli/index.js chat send <recipient-uuid> "test message" --conversation-id <conversation-uuid>
 node dist/cli/index.js chat watch --json
 node dist/cli/index.js snap send <recipient-uuid> photo.png --conversation-id <conversation-uuid>
@@ -126,6 +140,7 @@ $env:SNAP_LIVE_TESTS='1'; node dist/cli/index.js debug gateway-handshake --json
 $env:SNAP_LIVE_TESTS='1'; node dist/cli/index.js debug auth-renewal --cli-only
 $env:SNAP_LIVE_TESTS='1'; node dist/cli/index.js debug auth-gap --request private/edge-delta-probe.json --session private/session.json --mode node-web-cookie --auth-epoch edge-capture-1
 node dist/cli/index.js debug auth-binding har --file private/fresh7.har --epoch fresh7
+node dist/cli/index.js debug auth-binding har --file private/fresh8.har --epoch da4d-offline-2 --ignore-version
 node dist/cli/index.js debug auth-binding classify --observations private/auth-binding-observations.json
 $env:SNAP_LIVE_TESTS='1'; node dist/cli/index.js debug auth-binding probe --request private/edge-delta-probe.json --mode node-http2 --epoch fresh7
 $env:SNAP_LIVE_TESTS='1'; node dist/cli/index.js debug auth-binding gateway --mode node-gateway --epoch fresh7
@@ -135,8 +150,14 @@ The tracked `tests/fixtures/auth-binding-observations.json` file is synthetic
 developer test data only; do not use it as live evidence. Put only sanitized
 observations from the current auth epoch under the ignored `private/` directory.
 
+`--ignore-version` is available only on the offline `debug auth-binding har`
+command. It permits inspecting a supported HAR whose build differs from the
+configured build, but it never persists the HAR, starts a network probe, or
+relaxes session/runtime build checks.
+
 `session check` performs shape, account, lock, asset hash, module, and WASM
-checks without authenticated network traffic. `session refresh-har` extracts
+checks without authenticated network traffic for the verified runtime build.
+`session refresh-har` extracts
 the browser-issued shared Messaging/Gateway token, along with the Web Cookie,
 accounts context, and restricted heartbeat headers from a fresh sensitive HAR,
 then atomically persists them. The importer rejects captures where successful
@@ -144,6 +165,24 @@ Messaging and Gateway requests use different tokens. Later successful
 `accounts/sso` responses replace the shared token automatically.
 `session import` validates the export and every declared asset hash while
 holding the account's single-writer lock, then atomically installs it.
+
+`session export-cdp` connects only to a user-controlled, manually logged-in
+Snapchat Web tab exposed through the local Chrome DevTools Protocol. It reads
+that tab's local/session storage and IndexedDB state, combines it with the
+matching successful HAR authentication context, validates the selected build,
+and writes a DPAPI-sealed session file. It does not automate login, OTP,
+CAPTCHA, or browser profile-file access. Start the browser with remote
+debugging enabled, leave the Snapchat tab open, and use the same-build HAR:
+
+```powershell
+node dist/cli/index.js session export-cdp `
+  --har private/fresh8.har `
+  --output private/da4d-session.json
+```
+
+The default CDP endpoint is `http://127.0.0.1:9222`; override it with
+`--cdp-url` when needed. The command fails closed if the tab has no persisted
+messaging key state or if the HAR build does not match `SNAP_BUILD_ID`.
 
 `session login` contains the prompt-independent credential/OTP state machine
 and masks password/OTP input when the terminal supports raw mode. Password and

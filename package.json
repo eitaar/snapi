@@ -7,7 +7,8 @@
     "node": ">=24.0.0"
   },
   "bin": {
-    "snap": "./dist/cli/index.js"
+    "snap": "./dist/cli/index.js",
+    "snaapi": "./dist/cli/index.js"
   },
   "exports": {
     ".": "./dist/index.js"

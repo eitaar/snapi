@@ -1,6 +1,7 @@
 import { MessageChannel, MessagePort, Worker, type TransferListItem } from "node:worker_threads";
 import { randomUUID } from "node:crypto";
 import { AppError } from "../errors.js";
+import type { BuildId } from "../builds.js";
 import type { SessionExport } from "../session/types.js";
 import type { IncomingSnapMediaInfo } from "./content-types.js";
 import { syncOfficialFriends } from "./official-host-control.js";
@@ -421,6 +422,7 @@ function messagingArguments(
 
 export interface OfficialWorkerClientOptions {
   readonly assetDir: string;
+  readonly buildId?: BuildId;
   readonly workerUrl?: URL;
   readonly allowNetwork?: boolean;
   readonly contentDelegate?: object;
@@ -464,7 +466,11 @@ export class OfficialWorkerClient {
       this.rejectReady = reject;
     });
     this.worker = new Worker(options.workerUrl ?? new URL("./official-worker-entry.js", import.meta.url), {
-      workerData: { assetDir: options.assetDir, allowNetwork: options.allowNetwork === true },
+      workerData: {
+        assetDir: options.assetDir,
+        buildId: options.buildId ?? "8dd50222",
+        allowNetwork: options.allowNetwork === true,
+      },
     });
     this.worker.on("message", (value: unknown) => this.handleMessage(value));
     this.worker.once("error", (error) => this.failAll(new AppError(

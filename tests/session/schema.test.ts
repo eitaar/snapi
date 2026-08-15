@@ -83,6 +83,12 @@ describe("parseSessionExport", () => {
     });
   });
 
+  it("accepts a complete da4d065e export without rewriting its build id", () => {
+    const value = validSession() as { buildId: string };
+    value.buildId = "da4d065e";
+    expect(parseSessionExport(value).buildId).toBe("da4d065e");
+  });
+
   it("accepts login bootstrap state before the root wrapping key exists", () => {
     const value = validSession() as {
       sessionStorage: Record<string, string>;

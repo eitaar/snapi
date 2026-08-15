@@ -358,9 +358,9 @@ describe("CLI commands", () => {
     const state = configured();
     const outputDir = await mkdtemp(join(tmpdir(), "snap-cli-"));
     try {
-      const code = await main(["snap", "watch", "--output-dir", outputDir, "--json"], output.value, {
+      const code = await main(["snap", "watch", "--output-dir", outputDir, "--json"], output.value, withResolvedConfig({
         createClient: async () => state,
-      });
+      }));
       expect(code).toBe(0);
       expect(state.client.watchSnaps).toHaveBeenCalledOnce();
       expect(output.stdout.join("\n")).not.toContain("1,2,3");
@@ -613,6 +613,110 @@ describe("CLI commands", () => {
     expect(readFile).toHaveBeenCalledOnce();
   });
 
+  it("rejects a HAR build that does not match the selected diagnostic build", async () => {
+    const output = io();
+    const token = "b".repeat(64);
+    const har = {
+      log: {
+        entries: [
+          {
+            request: { method: "GET", url: "https://www.snapchat.com/web/version.json?version=da4d065e" },
+            response: { status: 200 },
+          },
+          {
+            request: {
+              method: "GET",
+              url: "wss://aws.duplex.snapchat.com/snapchat.gateway.Gateway/WebSocketConnect",
+              headers: [{ name: "sec-websocket-protocol", value: `snap-ws-auth, ${token}` }],
+            },
+            response: { status: 101, headers: [{ name: "sec-websocket-protocol", value: "snap-ws-auth" }] },
+          },
+          {
+            request: {
+              method: "POST",
+              url: "https://web.snapchat.com/messagingcoreservice.MessagingCoreService/GetGroups",
+              headers: [{ name: "authorization", value: `Bearer ${token}` }],
+            },
+            response: { status: 200 },
+          },
+        ],
+      },
+    };
+    const readFile = vi.fn(async () => new TextEncoder().encode(JSON.stringify(har)));
+
+    const code = await main([
+      "debug", "auth-binding", "har", "--file", "private/capture.har", "--epoch", "epoch-a",
+    ], output.value, {
+      readFile,
+      env: {
+        SNAP_SESSION_FILE: "private/session.json",
+        SNAP_ASSET_DIR: "private/assets",
+        SNAP_ACCOUNT_ID: "account-1",
+        SNAP_BUILD_ID: "8dd50222",
+        SNAP_OUTPUT: "json",
+      },
+      debugAuthBinding: { realpath: async (path) => path },
+    });
+
+    expect(code).toBe(3);
+    expect(output.stderr.join("\n")).toContain("HAR build does not match configured build");
+    expect(output.stdout).toEqual([]);
+    expect(readFile).toHaveBeenCalledOnce();
+  });
+
+  it("allows --ignore-version only for offline HAR metadata inspection", async () => {
+    const output = io();
+    const token = "c".repeat(64);
+    const har = {
+      log: {
+        entries: [
+          {
+            request: { method: "GET", url: "https://www.snapchat.com/web/version.json?version=da4d065e" },
+            response: { status: 200 },
+          },
+          {
+            request: {
+              method: "GET",
+              url: "wss://aws.duplex.snapchat.com/snapchat.gateway.Gateway/WebSocketConnect",
+              headers: [{ name: "sec-websocket-protocol", value: `snap-ws-auth, ${token}` }],
+            },
+            response: { status: 101, headers: [{ name: "sec-websocket-protocol", value: "snap-ws-auth" }] },
+          },
+          {
+            request: {
+              method: "POST",
+              url: "https://web.snapchat.com/messagingcoreservice.MessagingCoreService/GetGroups",
+              headers: [{ name: "authorization", value: `Bearer ${token}` }],
+            },
+            response: { status: 200 },
+          },
+        ],
+      },
+    };
+    const readFile = vi.fn(async () => new TextEncoder().encode(JSON.stringify(har)));
+
+    const code = await main([
+      "debug", "auth-binding", "har", "--file", "private/capture.har", "--epoch", "epoch-a", "--ignore-version",
+    ], output.value, {
+      readFile,
+      env: {
+        SNAP_SESSION_FILE: "private/session.json",
+        SNAP_ASSET_DIR: "private/assets",
+        SNAP_ACCOUNT_ID: "account-1",
+        SNAP_BUILD_ID: "8dd50222",
+        SNAP_OUTPUT: "json",
+      },
+      debugAuthBinding: { realpath: async (path) => path },
+    });
+
+    expect(code).toBe(0);
+    expect(JSON.parse(output.stdout[0]!)).toMatchObject({
+      type: "debug.auth-binding.har",
+      buildId: "da4d065e",
+    });
+    expect(output.stderr).toEqual([]);
+  });
+
   it("blocks auth-binding probes before reading files or using a transport when live tests are disabled", async () => {
     const output = io();
     const readFile = vi.fn();
@@ -634,8 +738,8 @@ describe("CLI commands", () => {
       expect(output.stderr.join("\n")).toContain("INVALID_CONFIG");
       expect(readFile).not.toHaveBeenCalled();
       expect(fetch).not.toHaveBeenCalled();
-      expect(resolveConfig).toHaveBeenCalledOnce();
       expect(readSealedSession).not.toHaveBeenCalled();
+      expect(resolveConfig).toHaveBeenCalledOnce();
       expect(loadEnvFile).not.toHaveBeenCalled();
     } finally {
       process.loadEnvFile = originalLoadEnvFile;

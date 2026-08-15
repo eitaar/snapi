@@ -13,6 +13,19 @@ describe("finalizeWebAttestation", () => {
     expect(run).toHaveBeenCalledWith(ACCOUNT_ID, { assetDir: "assets" });
   });
 
+  it("passes the selected build to the standalone attestation runtime", async () => {
+    const run = vi.fn(async (_accountId: string, options: { readonly buildId?: string }) =>
+      options.buildId ?? "missing",
+    );
+
+    await expect(finalizeWebAttestation(
+      ACCOUNT_ID,
+      { assetDir: "assets", buildId: "da4d065e" },
+      { run },
+    )).resolves.toBe("da4d065e");
+    expect(run).toHaveBeenCalledWith(ACCOUNT_ID, { assetDir: "assets", buildId: "da4d065e" });
+  });
+
   it("fails closed when the runtime returns an empty proof", async () => {
     const run = vi.fn(async () => "");
 

@@ -1,3 +1,5 @@
+import type { BuildId } from "../builds.js";
+
 export type ModuleFactory = (
   module: { exports: unknown },
   exports: unknown,
@@ -11,7 +13,7 @@ export interface ModuleMatch {
 }
 
 export interface CompatibilityReport {
-  readonly buildId: "8dd50222";
+  readonly buildId: BuildId;
   readonly assets: readonly {
     readonly filename: string;
     readonly sha256: string;

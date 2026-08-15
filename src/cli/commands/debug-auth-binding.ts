@@ -144,6 +144,18 @@ function parseFlags(argv: readonly string[], allowed: readonly string[]): Readon
   }));
 }
 
+function parseHarFlags(argv: readonly string[]): Readonly<{ file: string; epoch: string; ignoreVersion: boolean }> {
+  const ignoreVersionCount = argv.filter((value) => value === "--ignore-version").length;
+  if (ignoreVersionCount > 1) throw invalid("Invalid auth-binding arguments");
+  const positional = argv.filter((value) => value !== "--ignore-version");
+  const values = parseFlags(positional, ["--file", "--epoch"]);
+  return {
+    file: values["--file"]!,
+    epoch: values["--epoch"]!,
+    ignoreVersion: ignoreVersionCount === 1,
+  };
+}
+
 function epoch(value: string): string {
   if (value.length > 64 || !/^[A-Za-z0-9][A-Za-z0-9._-]*$/.test(value)) {
     throw invalid("Auth-binding epoch is invalid");
@@ -381,11 +393,14 @@ async function runHar(
   dependencies: DebugAuthBindingDependencies,
   env: NodeJS.ProcessEnv,
 ): Promise<number> {
-  const args = parseFlags(argv, ["--file", "--epoch"]);
-  epoch(args["--epoch"]!);
+  const args = parseHarFlags(argv);
+  epoch(args.epoch);
   const config = configFor(env, dependencies);
-  const file = await privatePath(config, args["--file"]!, dependencies);
+  const file = await privatePath(config, args.file, dependencies);
   const summary = summarizeAuthBindingHar(await readBytes(file, dependencies));
+  if (summary.buildId !== config.buildId && !args.ignoreVersion) {
+    throw invalid("HAR build does not match configured build");
+  }
   emit(io, outputFormat(env), "debug.auth-binding.har", summary);
   return 0;
 }

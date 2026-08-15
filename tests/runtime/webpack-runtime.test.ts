@@ -24,4 +24,18 @@ describe("host Webpack runtime", () => {
     const runtime = createWebpackRuntime(rebindWebpackFactories(captured), new Map([["8", { safe: true }]]));
     expect(runtime.require("8")).toEqual({ safe: true });
   });
+
+  it("supports the array-form export getter table used by the da4d bundle", () => {
+    const captured = captureWebpackModules(`
+      (globalThis.webpackChunk_snapchat_web = globalThis.webpackChunk_snapchat_web || []).push([
+        [1], { 9(module, exports, require) {
+          const value = 42;
+          require.d(exports, ["answer", 0, value]);
+        } }
+      ]);
+    `);
+    const runtime = createWebpackRuntime(rebindWebpackFactories(captured));
+
+    expect((runtime.require("9") as { readonly answer: number }).answer).toBe(42);
+  });
 });

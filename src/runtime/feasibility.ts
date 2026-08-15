@@ -1,5 +1,6 @@
 import { performance } from "node:perf_hooks";
 import { AppError, type ErrorCode } from "../errors.js";
+import type { BuildId } from "../builds.js";
 
 export const REQUIRED_CHECKS = [
   "assets_verified",
@@ -31,14 +32,14 @@ export interface FeasibilityCheck {
 }
 
 export interface FeasibilityReport {
-  readonly buildId: "8dd50222";
+  readonly buildId: BuildId;
   readonly startedAt: string;
   readonly verifiedAssets: readonly FeasibilityAsset[];
   readonly checks: readonly FeasibilityCheck[];
 }
 
 export interface FeasibilityGateConfig {
-  readonly buildId: "8dd50222";
+  readonly buildId: BuildId;
   readonly verifiedAssets: readonly FeasibilityAsset[];
   readonly runCheck: (name: FeasibilityCheckName) => Promise<void>;
   readonly now?: () => number;

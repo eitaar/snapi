@@ -2,7 +2,10 @@ import { AppError } from "../errors.js";
 import type { ModuleFactory } from "../compat/types.js";
 
 type WebpackRequire = ((id: string | number) => unknown) & {
-  d: (exports: object, definitions: Readonly<Record<string, () => unknown>>) => void;
+  d: (
+    exports: object,
+    definitions: Readonly<Record<string, () => unknown>> | readonly unknown[],
+  ) => void;
   r: (exports: object) => void;
   o: (value: object, property: PropertyKey) => boolean;
   n: (value: unknown) => (() => unknown) & { a?: () => unknown };
@@ -78,7 +81,32 @@ export function createWebpackRuntime(
     return module.exports;
   }) as WebpackRequire;
   require.d = (exports, definitions) => {
-    for (const [name, getter] of Object.entries(definitions)) {
+    if (Array.isArray(definitions)) {
+      for (let index = 0; index + 1 < definitions.length;) {
+        const name = definitions[index];
+        const descriptor = definitions[index + 1];
+        index += 2;
+        if (typeof name !== "string" || (descriptor !== 0 && typeof descriptor !== "function")) {
+          throw new AppError("UNSUPPORTED_BUILD", "Webpack export getter table is invalid");
+        }
+        if (!Object.prototype.hasOwnProperty.call(exports, name)) {
+          if (descriptor === 0) {
+            Object.defineProperty(exports, name, {
+              enumerable: true,
+              value: definitions[index],
+            });
+            index += 1;
+          } else {
+            Object.defineProperty(exports, name, { enumerable: true, get: descriptor });
+          }
+        } else if (descriptor === 0) {
+          index += 1;
+        }
+      }
+      return;
+    }
+    const objectDefinitions = definitions as Readonly<Record<string, () => unknown>>;
+    for (const [name, getter] of Object.entries(objectDefinitions)) {
       if (!Object.prototype.hasOwnProperty.call(exports, name)) {
         Object.defineProperty(exports, name, { enumerable: true, get: getter });
       }

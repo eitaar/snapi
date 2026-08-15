@@ -4,6 +4,7 @@ export { AccountProfileStore, assertAccountAlias } from "./accounts/profile-stor
 export type { AccountProfileRecord, AccountProfileSummary, AccountProfileV1 } from "./accounts/types.js";
 export { SnapchatClient, type SnapchatClientDependencies } from "./client.js";
 export { loadConfig, loadEnvironmentFile, resolveAppConfig, type AppConfig, type ResolveAppConfigOptions } from "./config.js";
+export { getBuildProfile, isSupportedBuildId, SUPPORTED_BUILD_IDS, type BuildId, type BuildProfile } from "./builds.js";
 export { AppError, asAppError, type ErrorCode } from "./errors.js";
 export { redact } from "./logging/redact.js";
 export { loadSession } from "./session/loader.js";

@@ -1,3 +1,5 @@
+import type { BuildId } from "../builds.js";
+
 export interface AssetRecord {
   readonly kind: "javascript" | "wasm";
   readonly filename: string;
@@ -49,7 +51,7 @@ export interface MessagingStateExport {
 export interface SessionExport {
   readonly formatVersion: 1;
   readonly accountId: string;
-  readonly buildId: "8dd50222";
+  readonly buildId: BuildId;
   readonly exportedAt: string;
   readonly auth: {
     readonly httpToken: string;

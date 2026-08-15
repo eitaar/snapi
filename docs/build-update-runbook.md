@@ -1,6 +1,8 @@
 # Build update runbook
 
-Do not change the supported build identifier or hashes from a single capture.
+Do not promote an observed build to a live-supported profile from a single
+capture. `8dd50222` and `da4d065e` now have separate offline asset/Worker
+profiles; the live acceptance sequence below is still required per build.
 Use managed accounts and repeat the evidence sequence on two independent fresh
 sessions.
 

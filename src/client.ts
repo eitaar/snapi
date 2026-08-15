@@ -1,5 +1,6 @@
 import { applyCookieOverrides } from "./auth/cookie-overrides.js";
 import { finalizeWebAttestation } from "./auth/web-attestation.js";
+import { getBuildProfile } from "./builds.js";
 import { AssetLoader } from "./compat/asset-loader.js";
 import { CompatibilityGuard } from "./compat/guard.js";
 import type { AppConfig } from "./config.js";
@@ -99,10 +100,17 @@ async function composeDefault(config: AppConfig): Promise<SnapchatClientComponen
   const lock = await new AccountLock(config.lockDir).acquire(config.accountId);
   let runtime: ContentRuntimeClient | undefined;
   try {
-    await new CompatibilityGuard(new AssetLoader(config.assetDir)).verify(authSession);
+    await new CompatibilityGuard(
+      new AssetLoader(config.assetDir),
+      undefined,
+      getBuildProfile(authSession.buildId),
+    ).verify(authSession);
     const auth = new AuthProvider(authSession, {
       refresh: (session) => refreshSnapchatSession(session, {
-        attestation: (value) => finalizeWebAttestation(value.accountId, { assetDir: config.assetDir }),
+        attestation: (value) => finalizeWebAttestation(value.accountId, {
+          assetDir: config.assetDir,
+          buildId: value.buildId,
+        }),
       }),
       persist: async (refreshed) => {
         const latest = await sessionStore.read();

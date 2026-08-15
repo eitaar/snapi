@@ -58,3 +58,21 @@ QUIC, TLS/client identity, browser principal, or bootstrap sequence.
 No conclusion here claims a DBSC key, attestation mechanism, TLS fingerprint,
 or server-side registration detail. The diagnostic layer does not make Chat,
 Snap, Gateway receive, or Gateway reconnect work by itself.
+
+## Build `da4d065e` profile (offline only)
+
+The operator capture `private/fresh8.har` was inspected offline on
+2026-08-14 after adding `da4d065e` as a separate analysis/session-schema
+profile. It contains one successful Gateway 101 with `snap-ws-auth`, three
+allowlisted Messaging 200 entries, and equal Gateway/Messaging authentication
+values. The capture also contains six Messaging write-path entries, including
+conversation/content update operations, so it is not a clean read-only
+baseline for a live probe.
+
+The capture was then used only to extract and hash the four public runtime
+assets into the ignored `private/da4d-assets` directory. Offline checks passed:
+the da4d asset manifest, build-specific Worker contract, Webpack bridge, WASM
+instantiation, official Worker startup, and Chat/Snap content construction.
+No live Chat, Snap, Gateway, or authentication probe was run from this HAR.
+It does not provide a da4d session export or persisted login-time E2EE state,
+so live messaging remains blocked until a matching browser export is supplied.

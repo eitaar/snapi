@@ -1,5 +1,6 @@
 import { describe, expect, it, vi } from "vitest";
 import { CompatibilityGuard, SUPPORTED_ASSETS, type CompatibilityProbe } from "../../src/compat/guard.js";
+import { getBuildProfile } from "../../src/builds.js";
 import type { AssetLoaderLike } from "../../src/compat/asset-loader.js";
 import type { SessionExport } from "../../src/session/types.js";
 
@@ -51,5 +52,27 @@ describe("CompatibilityGuard", () => {
       wasmExports: ["run"],
     });
     expect(loadVerified).toHaveBeenCalledTimes(4);
+  });
+
+  it("verifies the da4d065e manifest with its build-specific worker contract", async () => {
+    const profile = getBuildProfile("da4d065e");
+    const loadVerified = vi.fn<AssetLoaderLike["loadVerified"]>(async (record) =>
+      new TextEncoder().encode(record.filename),
+    );
+    const probe: CompatibilityProbe = {
+      inspect: vi.fn(async () => ({
+        modules: [{ capability: "messaging-wasm-worker", moduleId: "73843" }],
+        wasmImports: ["env.memory"],
+        wasmExports: ["run"],
+      })),
+    };
+    const guard = new CompatibilityGuard({ loadVerified }, probe, profile);
+    const value: SessionExport = { ...session(), buildId: "da4d065e", assets: profile.assets };
+
+    await expect(guard.verify(value)).resolves.toMatchObject({
+      buildId: "da4d065e",
+      assets: profile.assets.map(({ filename, sha256, size }) => ({ filename, sha256, size })),
+    });
+    expect(loadVerified).toHaveBeenCalledTimes(profile.assets.length);
   });
 });

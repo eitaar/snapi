@@ -108,6 +108,12 @@ interface HarEntry {
   readonly startedDateTime: string | undefined;
 }
 
+export interface HarAuthContext {
+  readonly accountId: string;
+  readonly exportedAt: string;
+  readonly auth: SessionExport["auth"];
+}
+
 function entriesFrom(har: unknown): readonly HarEntry[] {
   const entries = record(record(har)?.log)?.entries;
   if (!Array.isArray(entries)) {
@@ -308,6 +314,48 @@ export function enrichSessionWithHarAuth(
         : { webSessionRequestHeaders }),
       requestHeaders,
     },
+  };
+}
+
+export function extractHarAuthContext(har: unknown): HarAuthContext {
+  const entries = entriesFrom(har);
+  const ssoEntry = latest(entries.filter((entry) => {
+    const url = urlOf(entry);
+    return entry.request.method === "POST" &&
+      entry.response?.status === 200 &&
+      url?.origin === "https://accounts.snapchat.com" &&
+      url.pathname === "/accounts/sso";
+  }));
+  const accountId = header(ssoEntry?.response?.headers, "scuid");
+  if (accountId === undefined) {
+    throw new AppError("INVALID_SESSION_EXPORT", "HAR SSO response is missing the account identifier");
+  }
+  const placeholder: SessionExport = {
+    formatVersion: 1,
+    accountId,
+    buildId: "8dd50222",
+    exportedAt: new Date(0).toISOString(),
+    auth: {
+      httpToken: "har-placeholder",
+      gatewayToken: "har-placeholder",
+      cookieHeader: "",
+      requestHeaders: {},
+    },
+    assets: [],
+    localStorage: {},
+    indexedDb: { databases: [] },
+  };
+  const enriched = enrichSessionWithHarAuth(placeholder, har);
+  if (enriched.auth.cookieHeader.length === 0) {
+    throw new AppError(
+      "INVALID_SESSION_EXPORT",
+      "HAR does not contain a successful Web Cookie context",
+    );
+  }
+  return {
+    accountId,
+    exportedAt: enriched.exportedAt,
+    auth: enriched.auth,
   };
 }
 

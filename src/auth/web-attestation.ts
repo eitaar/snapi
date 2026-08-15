@@ -1,12 +1,15 @@
 import { Worker } from "node:worker_threads";
+import { getBuildProfile } from "../builds.js";
+import type { BuildId } from "../builds.js";
 import { AppError } from "../errors.js";
 
 const ACCOUNT_ID_PATTERN = /^[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i;
 const DEFAULT_TIMEOUT_MS = 30_000;
-const ATTESTATION_WASM_URL = "https://cf-st.sc-cdn.net/dw/c3e1083e9403dafd38c4.wasm";
+const ATTESTATION_WASM_URL = getBuildProfile("8dd50222").attestationWasmUrl;
 
 export interface WebAttestationOptions {
   readonly assetDir: string;
+  readonly buildId?: BuildId;
   readonly timeoutMs?: number;
   readonly workerUrl?: URL;
 }
@@ -48,7 +51,8 @@ async function runWorker(
     workerData: {
       accountId,
       assetDir: options.assetDir,
-      wasmUrl: ATTESTATION_WASM_URL,
+      buildId: options.buildId ?? "8dd50222",
+      wasmUrl: getBuildProfile(options.buildId ?? "8dd50222").attestationWasmUrl,
     },
   });
   worker.stdout?.resume();

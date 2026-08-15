@@ -1,11 +1,8 @@
 import { createHash } from "node:crypto";
+import type { BuildId } from "../builds.js";
 import { AppError } from "../errors.js";
+import { detectHarBuildId } from "../session/har-build.js";
 
-const BUILD_ID = "8dd50222" as const;
-const BUILD_MARKER_ORIGINS = new Set([
-  "https://web.snapchat.com",
-  "https://www.snapchat.com",
-]);
 const GATEWAY_URL = "wss://aws.duplex.snapchat.com/snapchat.gateway.Gateway/WebSocketConnect";
 const MESSAGING_ORIGIN = "https://web.snapchat.com";
 const EXPECTED_GATEWAY_ORIGIN = "https://www.snapchat.com";
@@ -54,7 +51,7 @@ const SAFE_MESSAGING_REQUEST_HEADERS = new Set([
 ]);
 
 export interface AuthBindingHarSummary {
-  readonly buildId: "8dd50222";
+  readonly buildId: BuildId;
   readonly gateway101Count: number;
   readonly messagingSuccessCount: number;
   readonly messagingWriteCount: number;
@@ -248,16 +245,6 @@ function normalizeHttpVersion(value: string | undefined): "h2" | "h3" | "http/1.
   }
 }
 
-function buildIsPinned(entries: readonly HarEntry[]): boolean {
-  return entries.some((entry) => {
-    const url = urlOf(entry);
-    return entry.request.method === "GET" && entry.response?.status === 200 &&
-      url !== undefined && BUILD_MARKER_ORIGINS.has(url.origin) &&
-      url.pathname === "/web/version.json" &&
-      url.searchParams.get("version") === BUILD_ID;
-  });
-}
-
 function safeGatewayOrigin(value: string | undefined): string | undefined {
   return value === EXPECTED_GATEWAY_ORIGIN ? EXPECTED_GATEWAY_ORIGIN : undefined;
 }
@@ -275,7 +262,8 @@ function canonicalUtcIso(value: string | undefined): string | undefined {
 export function summarizeAuthBindingHar(input: string | Uint8Array): AuthBindingHarSummary {
   const har = parseHar(input);
   const entries = entriesFrom(har);
-  if (!buildIsPinned(entries)) throw invalid("HAR build is unsupported");
+  const buildId = detectHarBuildId(har);
+  if (buildId === undefined) throw invalid("HAR build is unsupported");
   const gateways = entries.filter(isGatewaySuccess);
   const messages = entries.filter(isReadOnlyMessagingSuccess);
   const writes = entries.filter((entry) => isMessaging(entry) &&
@@ -294,7 +282,7 @@ export function summarizeAuthBindingHar(input: string | Uint8Array): AuthBinding
   const body = requestBody(messaging);
   const gatewayHeaders = headerNames(gateway.request.headers, SAFE_GATEWAY_REQUEST_HEADERS);
   return {
-    buildId: BUILD_ID,
+    buildId,
     gateway101Count: gateways.length,
     messagingSuccessCount: messages.length,
     messagingWriteCount: writes.length,

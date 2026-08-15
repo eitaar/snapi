@@ -3,6 +3,7 @@ import { dirname, join } from "node:path";
 import { applyCookieOverrides } from "../auth/cookie-overrides.js";
 import { finalizeWebAttestation } from "../auth/web-attestation.js";
 import { classifyRenewalFailure, type RenewalObservation } from "../auth/renewal.js";
+import { isSupportedBuildId, type BuildId } from "../builds.js";
 import { loadConfig, loadEnvironmentFile, type AppConfig } from "../config.js";
 import { AppError } from "../errors.js";
 import { parseJsonWithBytes } from "../session/binary-json.js";
@@ -19,7 +20,7 @@ const PROBE_FILENAME = "edge-delta-probe.json";
 export interface CliAuthRenewalProbeFixture {
   readonly binding: {
     readonly accountId: string;
-    readonly buildId: "8dd50222";
+    readonly buildId: BuildId;
     readonly sessionExportedAt: string;
   };
   readonly request: ReadOnlyAuthProbeInput["request"];
@@ -75,7 +76,7 @@ function parseProbeFixture(value: unknown): CliAuthRenewalProbeFixture {
   const fixture = objectAt(value, "CLI auth-renewal probe fixture is invalid");
   const binding = objectAt(fixture.binding, "CLI auth-renewal probe binding is required");
   const buildId = stringAt(binding.buildId, "CLI auth-renewal probe build binding is required");
-  if (buildId !== "8dd50222") {
+  if (!isSupportedBuildId(buildId)) {
     throw invalid("CLI auth-renewal probe build binding is unsupported");
   }
   return {
@@ -206,7 +207,10 @@ export async function runCliAuthRenewalProbe(
   try {
     const attestation = dependencies.attestation
       ?? (dependencies.config === undefined && dependencies.session === undefined
-        ? (value: SessionExport) => finalizeWebAttestation(value.accountId, { assetDir: config.assetDir })
+        ? (value: SessionExport) => finalizeWebAttestation(value.accountId, {
+            assetDir: config.assetDir,
+            buildId: value.buildId,
+          })
         : undefined);
     refreshed = await refreshSnapchatSession(session, {
       ...(dependencies.fetch === undefined ? {} : { fetch: dependencies.fetch }),

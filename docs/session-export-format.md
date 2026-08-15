@@ -27,9 +27,12 @@ secret: it contains authentication credentials and end-to-end-encryption key
 state. Store it under `private/` (ignored by Git), restrict access to the
 operator account, and never paste it into logs or issue reports.
 
-The capture mechanism is intentionally outside this repository. It must run in
-an operator-controlled, freshly authenticated Snapchat Web page and serialize
-the fields below without changing their values.
+The repository provides `snap session export-cdp` for this capture. It connects
+only to an operator-controlled, manually authenticated Snapchat Web page over
+the local Chrome DevTools Protocol and serializes the fields below without
+changing their values. It does not automate login or verification and never
+reads browser profile files or DBSC private keys. The matching successful HAR
+is still required for the authentication context.
 
 ## Profile invariants
 
@@ -38,8 +41,11 @@ asset directory. The profile is metadata only: account identity and build
 identity are always derived from the referenced sealed session, not copied into
 the profile record itself.
 
-Selected-profile import/export rejects account mismatches, build mismatches,
-and destination path mismatches before persistence or authenticated traffic.
+When a selected profile is active through `snaapi --account` or
+`SNAAPI_ACCOUNT`, session import and session export remain bound to that
+profile's existing session destination and supported build. Profile-mode
+import/export rejects account mismatches, build mismatches, and destination
+path mismatches before persistence or authenticated traffic.
 
 ## Top-level fields
 
@@ -47,7 +53,7 @@ and destination path mismatches before persistence or authenticated traffic.
 |---|---|---|
 | `formatVersion` | literal `1` | Export schema version. |
 | `accountId` | string | Current Snapchat user UUID. Messaging initialization requires UUID form. |
-| `buildId` | literal `8dd50222` | Exact supported Snapchat Web build. |
+| `buildId` | `8dd50222` or `da4d065e` | Exact supported Snapchat Web build profile. |
 | `exportedAt` | string | ISO-8601 UTC timestamp such as `2026-08-10T00:00:00.000Z`. |
 | `auth` | object | Authentication values described below. |
 | `assets` | array | Exact local bundle manifest described below. |
@@ -101,6 +107,21 @@ Use `snap session refresh-har <fresh.har>` to extract and persist these values
 as one atomic operation.
 
 All four fields are credentials. The CLI must never print their values.
+
+## Build profiles
+
+The CLI keeps build profiles separate. Both `8dd50222` and `da4d065e` have
+separate JavaScript/WASM manifests and official Worker bridge profiles. The
+da4d profile has passed offline Worker initialization and Chat/Snap content
+construction checks. Live operations still require a da4d session export with
+the matching login-time messaging key state; a HAR supplies authentication
+observations and public assets, not that persisted E2EE state.
+
+`SNAP_BUILD_ID`, the session export `buildId`, and the HAR
+`/web/version.json?version=...` marker must identify the same profile. A mixed
+HAR or a HAR without one unambiguous supported marker is rejected.
+The diagnostic-only `debug auth-binding har --ignore-version` option may inspect
+a supported mismatched HAR offline; it does not change this session invariant.
 
 ## Messaging key lifecycle
 

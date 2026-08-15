@@ -1,7 +1,8 @@
 import type { IndexedDbSnapshot } from "../session/types.js";
+import type { BuildId } from "../builds.js";
 
 export interface RuntimeStatus {
-  readonly buildId: "8dd50222";
+  readonly buildId: BuildId;
   readonly initializedAt: string;
 }
 

@@ -4,14 +4,18 @@ import { resolve } from "node:path";
 import { MessageChannel, parentPort, workerData } from "node:worker_threads";
 import { runInThisContext } from "node:vm";
 import tls from "node:tls";
+import { getBuildProfile } from "../builds.js";
+import type { BuildId } from "../builds.js";
 
 if (parentPort === null) throw new Error("Web Attestation Worker requires a parent port");
 
 const data = workerData as {
   readonly accountId: string;
   readonly assetDir: string;
+  readonly buildId?: BuildId;
   readonly wasmUrl: string;
 };
+const profile = getBuildProfile(data.buildId ?? "8dd50222");
 const queueName = "webpackChunk_snapchat_web_calling_app";
 const attestationWasmSha256 = "f22b03552274b5b36b01278547ab4c9c31f469aa09b89ece2ed52a04d752ed00";
 const attestationWasmSize = 849_474;
@@ -129,7 +133,7 @@ function installBrowserShims(): void {
     WorkerGlobalScope: { value: Object, configurable: true, writable: true },
     navigator: {
       value: {
-        userAgent: "Mozilla/5.0 Chrome/140.0.0.0 SnapchatWeb/8dd50222",
+        userAgent: `Mozilla/5.0 Chrome/140.0.0.0 SnapchatWeb/${profile.buildId}`,
         userAgentData: { brands: [{ brand: "Chromium", version: "140" }] },
         onLine: true,
       },
@@ -181,13 +185,13 @@ async function main(): Promise<void> {
     configurable: true,
   });
 
-  const bootstrapPath = resolve(data.assetDir, "4577c38d10436a1f90f1.chunk.js");
-  const dynamicPath = resolve(data.assetDir, "269b973c69f9ca2dcc93.chunk.js");
-  const mainPath = resolve(data.assetDir, "41f8a232e0dafca526c7.js");
+  const bootstrapPath = resolve(data.assetDir, profile.officialWorker.bootstrapAsset);
+  const dynamicPath = resolve(data.assetDir, profile.officialWorker.dynamicChunkAsset);
+  const mainPath = resolve(data.assetDir, profile.officialWorker.mainAsset);
   Object.defineProperty(target, "importScripts", {
     value: (...urls: readonly string[]) => {
       for (const url of urls) {
-        if (!url.includes("269b973c69f9ca2dcc93.chunk.js")) throw new Error("unverified dynamic chunk requested");
+        if (!url.includes(profile.officialWorker.dynamicChunkAsset)) throw new Error("unverified dynamic chunk requested");
         runInThisContext(readFileSync(dynamicPath, "utf8"), { filename: dynamicPath });
       }
     },

@@ -3,6 +3,8 @@ import { resolve } from "node:path";
 import { MessageChannel, parentPort, workerData } from "node:worker_threads";
 import { runInThisContext } from "node:vm";
 import "fake-indexeddb/auto";
+import { getBuildProfile } from "../builds.js";
+import type { BuildId } from "../builds.js";
 import { createOfficialNetworkBoundary } from "./official-network.js";
 import { serializeOfficialFriendState } from "./official-friend-snapshot.js";
 import {
@@ -21,16 +23,19 @@ import {
   registerOfficialMainAssetWithWorkerExports,
   waitForOfficialBootstrapRegistration,
 } from "./official-duplex-diagnostics.js";
+import { patchOfficialBootstrap } from "./official-webpack-bridge.js";
 
 if (parentPort === null) throw new Error("Official messaging Worker host requires a parent port");
 const data = workerData as {
   readonly assetDir: string;
+  readonly buildId?: BuildId;
   readonly allowNetwork?: boolean;
 };
-const bootstrapPath = resolve(data.assetDir, "4577c38d10436a1f90f1.chunk.js");
-const dynamicChunkPath = resolve(data.assetDir, "269b973c69f9ca2dcc93.chunk.js");
-const mainAssetPath = resolve(data.assetDir, "41f8a232e0dafca526c7.js");
-const wasmPath = resolve(data.assetDir, "903641c0ba985b2dcd13.wasm");
+const profile = getBuildProfile(data.buildId ?? "8dd50222");
+const bootstrapPath = resolve(data.assetDir, profile.officialWorker.bootstrapAsset);
+const dynamicChunkPath = resolve(data.assetDir, profile.officialWorker.dynamicChunkAsset);
+const mainAssetPath = resolve(data.assetDir, profile.officialWorker.mainAsset);
+const wasmPath = resolve(data.assetDir, profile.officialWorker.wasmAsset);
 const listeners = new Map<string, Set<(event: { readonly data?: unknown }) => void>>();
 let webCookieHeader: string | undefined;
 let ssoCookieHeader: string | undefined;
@@ -70,7 +75,7 @@ Object.defineProperties(target, {
   process: { value: undefined, configurable: true, writable: true },
   navigator: {
     value: {
-      userAgent: "Mozilla/5.0 Chrome/140.0.0.0 SnapchatWeb/8dd50222",
+      userAgent: `Mozilla/5.0 Chrome/140.0.0.0 SnapchatWeb/${profile.buildId}`,
       userAgentData: { brands: [{ brand: "Chromium", version: "140" }] },
       language: "ja-JP",
       languages: ["ja-JP", "ja", "en-US", "en"],
@@ -109,7 +114,7 @@ class AssetResponse extends NativeResponse {
   constructor(body?: BodyInit | null, init?: ResponseInit) {
     super(body, init);
     Object.defineProperty(this, "url", {
-      value: "https://cf-st.sc-cdn.net/dw/903641c0ba985b2dcd13.wasm",
+      value: profile.officialWorker.wasmUrl,
     });
   }
 }
@@ -124,7 +129,7 @@ const networkBoundary = createOfficialNetworkBoundary(data.allowNetwork, nativeF
 Object.defineProperty(target, "fetch", {
   value: async (input: string | URL | Request, init?: RequestInit): Promise<Response> => {
     const url = typeof input === "string" ? input : input instanceof URL ? input.href : input.url;
-    if (url.includes("903641c0ba985b2dcd13.wasm")) {
+    if (url.includes(profile.officialWorker.wasmAsset)) {
       return new AssetResponse(readFileSync(wasmPath), {
         status: 200,
         headers: { "content-type": "application/wasm" },
@@ -158,7 +163,7 @@ Object.defineProperties(target, {
   importScripts: {
     value: (...urls: readonly string[]) => {
       for (const url of urls) {
-        if (!url.includes("269b973c69f9ca2dcc93.chunk.js")) {
+        if (!url.includes(profile.officialWorker.dynamicChunkAsset)) {
           throw new Error("Official messaging Worker requested an unverified dynamic chunk");
         }
         runInThisContext(readFileSync(dynamicChunkPath, "utf8"), { filename: dynamicChunkPath });
@@ -181,6 +186,29 @@ function officialWebpackRequire(): ((id: string | number) => unknown) {
   return require as (id: string | number) => unknown;
 }
 
+function safeTypeErrorDetail(error: unknown): string | undefined {
+  if (!(error instanceof TypeError)) return undefined;
+  const message = error.message;
+  const read = /^Cannot read properties of (undefined|null) \(reading '([A-Za-z_$][A-Za-z0-9_$]*)'\)$/.exec(message);
+  if (read !== null) return `read-${read[1]}-${read[2]}`;
+  const set = /^Cannot set properties of (undefined|null) \(setting '([A-Za-z_$][A-Za-z0-9_$]*)'\)$/.exec(message);
+  if (set !== null) return `set-${set[1]}-${set[2]}`;
+  const notAFunction = /^([A-Za-z_$][A-Za-z0-9_$.(\[\])]+) is not a function$/.exec(message);
+  if (notAFunction !== null) return `not-a-function-${notAFunction[1]}`;
+  if (message.includes("is not a function")) return "not-a-function";
+  return "type-error";
+}
+
+function safeErrorDetail(error: unknown): string | undefined {
+  const typeDetail = safeTypeErrorDetail(error);
+  if (typeDetail !== undefined) return typeDetail;
+  if (!(error instanceof ReferenceError)) return undefined;
+  const missing = /^([A-Za-z_$][A-Za-z0-9_$]*) is not defined$/.exec(error.message);
+  if (missing !== null) return `missing-${missing[1]}`;
+  const sanitized = error.message.replace(/[^A-Za-z0-9_$' .()]/g, "");
+  return sanitized.length > 0 && sanitized.length <= 80 ? `reference-${sanitized}` : "reference-error";
+}
+
 async function resolveIncomingMedia(
   mediaInfo: unknown,
   context: string,
@@ -197,7 +225,7 @@ async function resolveIncomingMedia(
     typeof mediaReference.localCacheKey !== "string";
   if (!mediaResolverReady && needsContentResolver) {
     const require = officialWebpackRequire();
-    const authStore = (require("78425") as {
+    const authStore = (require(profile.officialWorker.userStoreModuleId) as {
       readonly M: {
         readonly getState: () => { readonly auth?: Record<string, unknown> };
         readonly setState?: (value: unknown) => void;
@@ -288,7 +316,14 @@ function applyCurrentOfficialAuthStore(
 async function syncFriends(accountId: string | undefined): Promise<unknown> {
   let stage = "load-store";
   try {
-    const store = officialWebpackRequire()("78425") as {
+    const require = officialWebpackRequire() as ((id: string | number) => unknown) & {
+      readonly m?: Record<string, unknown>;
+    };
+    const moduleId = profile.officialWorker.userStoreModuleId;
+    if (require.m !== undefined && !Object.prototype.hasOwnProperty.call(require.m, moduleId)) {
+      throw new Error("Official user store module is not registered for this build");
+    }
+    const store = require(moduleId) as {
       readonly M?: {
         readonly getState: () => { readonly auth?: Record<string, unknown>; readonly user?: unknown };
         readonly setState?: (value: unknown) => void;
@@ -319,7 +354,9 @@ async function syncFriends(accountId: string | undefined): Promise<unknown> {
       error.name === OFFICIAL_SESSION_EXPIRED_ERROR_NAME ||
       error.message === "Official friend synchronization failed"
     )) throw error;
-    throw new Error(`Official friend synchronization failed at ${stage}`);
+    const errorName = error instanceof Error ? error.name : "UnknownError";
+    const detail = safeErrorDetail(error);
+    throw new Error(`Official friend synchronization failed at ${stage} (${errorName}${detail === undefined ? "" : `:${detail}`})`);
   }
 }
 
@@ -429,34 +466,28 @@ parentPort!.on("message", (message: unknown) => {
   });
 });
 
-let bootstrapSource = readFileSync(bootstrapPath, "utf8");
-bootstrapSource = instrumentOfficialDuplexErrors(bootstrapSource);
-const runtimeHelperBridge = "s.r=e=>{typeof Symbol!==\"undefined\"&&Symbol.toStringTag&&Object.defineProperty(e,Symbol.toStringTag,{value:\"Module\"}),Object.defineProperty(e,\"__esModule\",{value:!0})},s.nmd=e=>(e.paths=[],e.children||(e.children=[]),e),s.t=(e,t)=>{if(1&t&&(e=s(e)),8&t)return e;if(\"object\"==typeof e&&e){if(4&t&&e.__esModule)return e;if(16&t&&\"function\"==typeof e.then)return e}const n=Object.create(null);s.r(n);const r={};for(let o=2&t&&e;o&&\"object\"==typeof o&&!Object.prototype.hasOwnProperty.call(o,\"__esModule\");o=Object.getPrototypeOf(o)){const e=o;for(const t of Object.getOwnPropertyNames(e))r[t]=()=>e[t]}r.default=()=>e,s.d(n,r);return n},s.g=globalThis";
-bootstrapSource = bootstrapSource.replace(
-  "t=s.x,s.x=()=>",
-  `${runtimeHelperBridge},globalThis.__officialWebpackRequire=s,t=s.x,s.x=()=>`,
+const bootstrapSource = patchOfficialBootstrap(
+  instrumentOfficialDuplexErrors(readFileSync(bootstrapPath, "utf8")),
+  profile.officialWorker.webpackRequireVariable,
 );
-bootstrapSource = bootstrapSource.replace(
-  "un.wasmModule=c,un.wasmModuleCleanup=u",
-  "un.wasmModule=c,globalThis.__officialWasmModule=c,un.wasmModuleCleanup=u",
-);
-if (!bootstrapSource.includes("__officialWebpackRequire") || !bootstrapSource.includes("__officialWasmModule")) {
-  throw new Error("Official bootstrap does not match the pinned Webpack bridge shape");
-}
 runInThisContext(bootstrapSource, { filename: bootstrapPath });
 const mainAssetSource = readFileSync(mainAssetPath, "utf8");
-const mainRuntimeSuffix = ",e=>{e(e.s=28420)}";
+const mainRuntimeSuffix = `,e=>{e(e.s=${profile.officialWorker.mainRuntimeEntryId})}`;
 const mainRuntimeIndex = mainAssetSource.lastIndexOf(mainRuntimeSuffix);
 if (mainRuntimeIndex < 0) throw new Error("Pinned main asset does not match the expected registration shape");
 const webpackRuntime = officialWebpackRequire() as ((id: string | number) => unknown) & {
   readonly m?: Record<string, unknown>;
 };
 if (webpackRuntime.m === undefined) throw new Error("Official Webpack module registry is unavailable");
-registerOfficialMainAssetWithWorkerExports(webpackRuntime.m, ["61056", "20606", "33326"], () => {
+registerOfficialMainAssetWithWorkerExports(
+  webpackRuntime.m,
+  profile.officialWorker.collidingWorkerModuleIds,
+  () => {
   runInThisContext(
     `${mainAssetSource.slice(0, mainRuntimeIndex)}${mainAssetSource.slice(mainRuntimeIndex + mainRuntimeSuffix.length)}`,
     { filename: mainAssetPath },
   );
-});
+  },
+);
 await waitForOfficialBootstrapRegistration();
 setImmediate(() => parentPort!.postMessage({ __officialHostReady: true }));

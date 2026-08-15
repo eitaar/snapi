@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { enrichSessionWithHarAuth } from "../../src/session/har-auth.js";
+import { enrichSessionWithHarAuth, extractHarAuthContext } from "../../src/session/har-auth.js";
 import type { SessionExport } from "../../src/session/types.js";
 
 const session: SessionExport = {
@@ -105,6 +105,15 @@ function har(
 }
 
 describe("enrichSessionWithHarAuth", () => {
+  it("extracts a standalone auth context for browser export", () => {
+    const extracted = extractHarAuthContext(har());
+
+    expect(extracted.accountId).toBe(session.accountId);
+    expect(extracted.exportedAt).toBe("2026-08-11T00:01:04.000Z");
+    expect(extracted.auth.httpToken).toBe("t".repeat(96));
+    expect(JSON.stringify(extracted)).not.toContain("account-session=secret");
+  });
+
   it("imports authentication proven by successful messaging requests", () => {
     expect(enrichSessionWithHarAuth(session, har())).toMatchObject({
       exportedAt: "2026-08-11T00:01:04.000Z",

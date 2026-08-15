@@ -156,6 +156,14 @@ describe("summarizeAuthBindingHar", () => {
     expect(summary.buildId).toBe("8dd50222");
   });
 
+  it("summarizes the separately supported da4d065e build", () => {
+    const summary = summarizeAuthBindingHar(JSON.stringify(miniHar({
+      versionMarker: "da4d065e",
+    })));
+
+    expect(summary.buildId).toBe("da4d065e");
+  });
+
   it.each([
     ["missing", ""],
     ["different", "other-protocol"],
