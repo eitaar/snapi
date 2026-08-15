@@ -1,7 +1,7 @@
-import { dirname, join } from "node:path";
 import { applyCookieOverrides } from "../auth/cookie-overrides.js";
 import { finalizeWebAttestation } from "../auth/web-attestation.js";
-import { loadConfig, loadEnvironmentFile } from "../config.js";
+import { getBuildProfile, type BuildId } from "../builds.js";
+import { loadConfig, loadEnvironmentFile, type AppConfig } from "../config.js";
 import { GatewayClient } from "../gateway/client.js";
 import type { GatewayStatus } from "../gateway/events.js";
 import { AccountLock } from "../session/account-lock.js";
@@ -13,25 +13,35 @@ import type { ConfiguredGatewayStatusClient, GatewayStatusClient } from "./comma
 
 type Session = Awaited<ReturnType<typeof loadSession>>;
 
-function assertSession(config: ReturnType<typeof loadConfig>, session: Session): void {
-  if (session.accountId !== config.accountId) throw new Error("Configured account does not match the session export");
-  if (session.buildId !== config.buildId) throw new Error("Configured build does not match the session export");
+export function assertGatewayRuntimeBuild(buildId: BuildId): void {
+  getBuildProfile(buildId);
 }
 
-export async function createConfiguredGatewayStatusClient(): Promise<ConfiguredGatewayStatusClient> {
-  loadEnvironmentFile();
-  const config = loadConfig();
-  const sessionStore = new SealedSessionStore(config.sessionFile);
+function assertSession(config: AppConfig, session: Session): void {
+  if (session.accountId !== config.accountId) throw new Error("Configured account does not match the session export");
+  if (session.buildId !== config.buildId) throw new Error("Configured build does not match the session export");
+  assertGatewayRuntimeBuild(session.buildId);
+}
+
+export async function createConfiguredGatewayStatusClient(config?: AppConfig): Promise<ConfiguredGatewayStatusClient> {
+  const selectedConfig = config ?? (() => {
+    loadEnvironmentFile();
+    return loadConfig();
+  })();
+  const sessionStore = new SealedSessionStore(selectedConfig.sessionFile);
   const initialSession = applyCookieOverrides(await sessionStore.readOrMigrateLegacy(), {
-    ...(config.cookieHeader === undefined ? {} : { cookieHeader: config.cookieHeader }),
-    ...(config.ssoCookieHeader === undefined ? {} : { ssoCookieHeader: config.ssoCookieHeader }),
+    ...(selectedConfig.cookieHeader === undefined ? {} : { cookieHeader: selectedConfig.cookieHeader }),
+    ...(selectedConfig.ssoCookieHeader === undefined ? {} : { ssoCookieHeader: selectedConfig.ssoCookieHeader }),
   });
-  assertSession(config, initialSession);
-  const lock = await new AccountLock(join(dirname(config.sessionFile), "locks")).acquire(config.accountId);
+  assertSession(selectedConfig, initialSession);
+  const lock = await new AccountLock(selectedConfig.lockDir).acquire(selectedConfig.accountId);
   try {
     const auth = new AuthProvider(initialSession, {
       refresh: (session) => refreshSnapchatSession(session, {
-        attestation: (value) => finalizeWebAttestation(value.accountId, { assetDir: config.assetDir }),
+        attestation: (value) => finalizeWebAttestation(value.accountId, {
+          assetDir: selectedConfig.assetDir,
+          buildId: value.buildId,
+        }),
       }),
       persist: async (refreshed) => {
         const latest = await sessionStore.read();
@@ -57,7 +67,7 @@ export async function createConfiguredGatewayStatusClient(): Promise<ConfiguredG
         }
       },
     };
-    return { client, output: config.output };
+    return { client, output: selectedConfig.output };
   } catch (error) {
     await lock.release().catch(() => undefined);
     throw error;

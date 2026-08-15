@@ -1,4 +1,4 @@
-import { loadConfig, loadEnvironmentFile } from "../../config.js";
+import { loadConfig, loadEnvironmentFile, type AppConfig } from "../../config.js";
 import { AppError } from "../../errors.js";
 import { loadSession } from "../../session/loader.js";
 import { probeGatewayHandshake } from "../../gateway/handshake.js";
@@ -8,6 +8,7 @@ export async function runDebugGatewayHandshake(
   argv: readonly string[],
   io: CliIo,
   dependencies: {
+    readonly config?: AppConfig;
     readonly loadSession?: typeof loadSession;
     readonly probe?: typeof probeGatewayHandshake;
     readonly env?: NodeJS.ProcessEnv;
@@ -23,7 +24,7 @@ export async function runDebugGatewayHandshake(
   if (env.SNAP_LIVE_TESTS !== "1") {
     throw new AppError("INVALID_CONFIG", "Set SNAP_LIVE_TESTS=1 to run the read-only Gateway handshake probe");
   }
-  const config = loadConfig(env);
+  const config = dependencies.config ?? loadConfig(env);
   const session = await (dependencies.loadSession ?? loadSession)(config.sessionFile);
   if (session.accountId !== config.accountId) {
     throw new AppError("INVALID_CONFIG", "Gateway handshake session account does not match configuration");

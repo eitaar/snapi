@@ -83,6 +83,7 @@ export interface DebugAuthBindingDependencies {
   readonly fetch?: typeof globalThis.fetch;
   readonly now?: () => Date;
   readonly env?: NodeJS.ProcessEnv;
+  readonly config?: AppConfig;
   readonly realpath?: (path: string) => Promise<string>;
   readonly readSealedSession?: (path: string) => Promise<Awaited<ReturnType<SealedSessionStore["read"]>>>;
   readonly gatewayProbe?: NodeAuthBindingProbeDependencies["gatewayProbe"];
@@ -365,7 +366,8 @@ async function configuredSession(
   return session;
 }
 
-function configFor(env: NodeJS.ProcessEnv): AppConfig {
+function configFor(env: NodeJS.ProcessEnv, dependencies: DebugAuthBindingDependencies): AppConfig {
+  if (dependencies.config !== undefined) return dependencies.config;
   try {
     return loadConfig(env);
   } catch {
@@ -381,7 +383,7 @@ async function runHar(
 ): Promise<number> {
   const args = parseFlags(argv, ["--file", "--epoch"]);
   epoch(args["--epoch"]!);
-  const config = configFor(env);
+  const config = configFor(env, dependencies);
   const file = await privatePath(config, args["--file"]!, dependencies);
   const summary = summarizeAuthBindingHar(await readBytes(file, dependencies));
   emit(io, outputFormat(env), "debug.auth-binding.har", summary);
@@ -397,7 +399,7 @@ async function runProbe(
   const args = parseFlags(argv, ["--request", "--baseline-har", "--mode", "--epoch"]);
   if (args["--mode"] !== "node-http1" && args["--mode"] !== "node-http2") throw invalid("Auth-binding probe mode is invalid");
   const authEpoch = epoch(args["--epoch"]!);
-  const config = configFor(env);
+  const config = configFor(env, dependencies);
   const requestPath = await privatePath(config, args["--request"]!, dependencies);
   const baselinePath = await privatePath(config, args["--baseline-har"]!, dependencies);
   const session = await configuredSession(config, dependencies);
@@ -454,7 +456,7 @@ async function runGateway(
   const args = parseFlags(argv, ["--baseline-har", "--mode", "--epoch"]);
   if (args["--mode"] !== "node-gateway") throw invalid("Auth-binding gateway mode is invalid");
   const authEpoch = epoch(args["--epoch"]!);
-  const config = configFor(env);
+  const config = configFor(env, dependencies);
   const baselinePath = await privatePath(config, args["--baseline-har"]!, dependencies);
   const session = await configuredSession(config, dependencies);
   const baseline = await readBytes(baselinePath, dependencies);

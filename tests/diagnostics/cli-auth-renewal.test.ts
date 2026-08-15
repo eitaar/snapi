@@ -1,5 +1,6 @@
 import { describe, expect, it, vi } from "vitest";
 import { main } from "../../src/cli/index.js";
+import type { AppConfig } from "../../src/config.js";
 import {
   runCliAuthRenewalProbe,
   type CliAuthRenewalDependencies,
@@ -49,6 +50,25 @@ function config() {
     buildId: "8dd50222" as const,
     output: "json" as const,
   };
+}
+
+function selectedConfig(overrides: Partial<AppConfig> = {}): AppConfig {
+  return {
+    sessionFile: "C:/profiles/main-session.json",
+    assetDir: "C:/profiles/main-assets",
+    lockDir: "C:/profiles/accounts/.locks",
+    accountId: "account-main",
+    buildId: "8dd50222",
+    output: "json",
+    accountAlias: "main",
+    ...overrides,
+  };
+}
+
+function legacySelectedConfig(): AppConfig {
+  const { accountAlias, ...selected } = selectedConfig();
+  void accountAlias;
+  return selected;
 }
 
 function probeRequest() {
@@ -213,6 +233,39 @@ describe("debug auth-renewal CLI", () => {
 
     expect(code).toBe(3);
     expect(output.stderr.join("\n")).toContain("INVALID_CONFIG");
+  });
+
+  it("passes the legacy resolved config once into debug auth-renewal --cli-only", async () => {
+    const output = io();
+    const selected = legacySelectedConfig();
+    const resolveConfig = vi.fn(async (accountAlias?: string) => {
+      expect(accountAlias).toBeUndefined();
+      return selected;
+    });
+    const runDebugAuthRenewal = vi.fn(async (
+      ioValue: { stdout: (line: string) => void },
+      dependencies?: { readonly config?: AppConfig },
+    ) => {
+      expect(dependencies?.config).toBe(selected);
+      ioValue.stdout(JSON.stringify({
+        type: "debug.auth-renewal",
+        mode: "cli-only",
+        result: "renewed",
+        statuses: [200],
+        capabilities: [{ capability: "manual-session", status: "used" }],
+      }));
+      return 0;
+    });
+
+    const code = await main(
+      ["debug", "auth-renewal", "--cli-only"],
+      output.value,
+      { resolveConfig, runDebugAuthRenewal } as never,
+    );
+
+    expect(code).toBe(0);
+    expect(resolveConfig).toHaveBeenCalledOnce();
+    expect(runDebugAuthRenewal).toHaveBeenCalledOnce();
   });
 
   it("routes debug auth-renewal --cli-only and prints the safe report", async () => {

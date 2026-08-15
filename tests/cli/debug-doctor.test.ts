@@ -1,4 +1,6 @@
 import { describe, expect, it, vi } from "vitest";
+import { main } from "../../src/cli/index.js";
+import type { AppConfig } from "../../src/config.js";
 import { AppError } from "../../src/errors.js";
 import { REQUIRED_CHECKS, type FeasibilityReport } from "../../src/runtime/feasibility.js";
 import {
@@ -38,7 +40,56 @@ function session(overrides: Partial<SessionExport["auth"]> = {}): SessionExport 
   };
 }
 
+function config(overrides: Partial<AppConfig> = {}): AppConfig {
+  return {
+    sessionFile: "C:/profiles/main-session.json",
+    assetDir: "C:/profiles/main-assets",
+    lockDir: "C:/profiles/accounts/.locks",
+    accountId: "account-main",
+    buildId: "8dd50222",
+    output: "json",
+    accountAlias: "main",
+    ...overrides,
+  };
+}
+
+function legacyConfig(): AppConfig {
+  const { accountAlias, ...selected } = config();
+  void accountAlias;
+  return selected;
+}
+
 describe("runtime doctor command", () => {
+  it("passes the legacy resolved config once into the runtime doctor route", async () => {
+    const stdout: string[] = [];
+    const selected = legacyConfig();
+    const resolveConfig = vi.fn(async (accountAlias?: string) => {
+      expect(accountAlias).toBeUndefined();
+      return selected;
+    });
+    const runRuntimeDoctor = vi.fn(async (
+      io: { stdout: (line: string) => void },
+      dependencies?: { readonly config?: AppConfig },
+    ) => {
+      expect(dependencies?.config).toBe(selected);
+      io.stdout("runtime-doctor");
+      return 0;
+    });
+
+    const code = await main([
+      "debug", "doctor", "--runtime",
+    ], {
+      version: "0.1.0",
+      stdout: (line) => stdout.push(line),
+      stderr: () => undefined,
+    }, { resolveConfig, runRuntimeDoctor } as never);
+
+    expect(code).toBe(0);
+    expect(resolveConfig).toHaveBeenCalledOnce();
+    expect(runRuntimeDoctor).toHaveBeenCalledOnce();
+    expect(stdout).toEqual(["runtime-doctor"]);
+  });
+
   it("applies configured cookies unless the session came from a HAR", () => {
     const updated = applyRuntimeDoctorCookieOverrides(session(), {
       cookieHeader: "web=new",

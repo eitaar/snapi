@@ -43,8 +43,10 @@ export async function runSessionLogin(
     io.stderr("Usage: snap session login");
     return 2;
   }
-  loadEnvironmentFile();
-  const config = dependencies.config ?? loadConfig();
+  const config = dependencies.config ?? (() => {
+    loadEnvironmentFile();
+    return loadConfig();
+  })();
   const prompt = dependencies.prompt ?? createTerminalLoginPrompt();
   const transport = dependencies.transport
     ?? await (dependencies.createTransport ?? (async () => createLoginTransport()))();

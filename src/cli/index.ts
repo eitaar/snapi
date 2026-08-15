@@ -38,12 +38,20 @@ export interface CliDependencies {
     io: CliIo,
     dependencies?: AccountShowDependencies,
   ) => Promise<number>;
-  readonly runRuntimeDoctor?: (io: CliIo) => Promise<number>;
-  readonly runDebugAuthRenewal?: (io: CliIo) => Promise<number>;
-  readonly runSessionCheck?: (io: CliIo) => Promise<number>;
+  readonly runRuntimeDoctor?: (io: CliIo, dependencies?: { readonly config?: AppConfig }) => Promise<number>;
+  readonly runDebugAuthRenewal?: (
+    io: CliIo,
+    dependencies?: { readonly env?: NodeJS.ProcessEnv; readonly config?: AppConfig },
+  ) => Promise<number>;
+  readonly runSessionCheck?: (io: CliIo, dependencies?: { readonly config?: AppConfig }) => Promise<number>;
+  readonly runSessionExportCdp?: (
+    argv: readonly string[],
+    io: CliIo,
+    dependencies?: { readonly config?: AppConfig; readonly env?: NodeJS.ProcessEnv },
+  ) => Promise<number>;
   readonly resolveConfig?: (accountAlias?: string) => Promise<AppConfig>;
   readonly createClient?: (config: AppConfig) => Promise<ConfiguredCliClient>;
-  readonly createGatewayStatusClient?: () => Promise<ConfiguredGatewayStatusClient>;
+  readonly createGatewayStatusClient?: (config: AppConfig) => Promise<ConfiguredGatewayStatusClient>;
   readonly readFile?: (path: string) => Promise<Uint8Array>;
   readonly fetch?: typeof globalThis.fetch;
   readonly now?: () => Date;
@@ -155,8 +163,12 @@ export async function main(
   if (argv.length >= 2 && argv[0] === "debug" && argv[1] === "auth-binding") {
     try {
       const runDebugAuthBinding = (await import("./commands/debug-auth-binding.js")).runDebugAuthBinding;
+      const selectedConfig = argv[2] === "classify"
+        ? undefined
+        : await config();
       return await runDebugAuthBinding(argv.slice(2), io, {
         ...(dependencies.debugAuthBinding ?? {}),
+        ...(selectedConfig === undefined ? {} : { config: selectedConfig }),
         ...(dependencies.readFile === undefined ? {} : { readFile: dependencies.readFile }),
         ...(dependencies.fetch === undefined ? {} : { fetch: dependencies.fetch }),
         ...(dependencies.now === undefined ? {} : { now: dependencies.now }),
@@ -169,16 +181,20 @@ export async function main(
   if (argv.length === 3 && argv[0] === "debug" && argv[1] === "doctor" && argv[2] === "--runtime") {
     const runRuntimeDoctor = dependencies.runRuntimeDoctor ??
       (await import("./commands/debug-doctor.js")).runRuntimeDoctor;
-    return runRuntimeDoctor(io);
+    return runRuntimeDoctor(io, { config: await config() });
   }
   if (argv.length === 3 && argv[0] === "debug" && argv[1] === "auth-renewal" && argv[2] === "--cli-only") {
     try {
       if (dependencies.runDebugAuthRenewal !== undefined) {
-        return await dependencies.runDebugAuthRenewal(io);
+        return await dependencies.runDebugAuthRenewal(io, {
+          ...(dependencies.env === undefined ? {} : { env: dependencies.env }),
+          config: await config(),
+        });
       }
       const runDebugAuthRenewal = (await import("./commands/debug-doctor.js")).runDebugAuthRenewal;
       return await runDebugAuthRenewal(io, {
         ...(dependencies.env === undefined ? {} : { env: dependencies.env }),
+        config: await config(),
       });
     } catch (error) {
       return emitError(io, error);
@@ -188,6 +204,7 @@ export async function main(
     try {
       const runDebugAuthGap = (await import("./commands/debug-auth-gap.js")).runDebugAuthGap;
       return await runDebugAuthGap(argv.slice(2), io, {
+        config: await config(),
         ...(dependencies.readFile === undefined ? {} : { readFile: dependencies.readFile }),
         ...(dependencies.fetch === undefined ? {} : { fetch: dependencies.fetch }),
         ...(dependencies.now === undefined ? {} : { now: dependencies.now }),
@@ -202,6 +219,7 @@ export async function main(
       const runDebugGatewayHandshake = (await import("./commands/debug-gateway-handshake.js"))
         .runDebugGatewayHandshake;
       return await runDebugGatewayHandshake(argv.slice(2), io, {
+        config: await config(),
         ...(dependencies.env === undefined ? {} : { env: dependencies.env }),
       });
     } catch (error) {
@@ -212,7 +230,7 @@ export async function main(
     try {
       const runSessionCheck = dependencies.runSessionCheck ??
         (await import("./commands/session-check.js")).runSessionCheck;
-      return await runSessionCheck(io);
+      return await runSessionCheck(io, { config: await config() });
     } catch (error) {
       return emitError(io, error);
     }
@@ -220,7 +238,19 @@ export async function main(
   if (argv.length >= 2 && argv[0] === "session" && argv[1] === "import") {
     try {
       const runSessionImport = (await import("./commands/session-import.js")).runSessionImport;
-      return await runSessionImport(argv.slice(2), io);
+      return await runSessionImport(argv.slice(2), io, { config: await config() });
+    } catch (error) {
+      return emitError(io, error);
+    }
+  }
+  if (argv.length >= 2 && argv[0] === "session" && argv[1] === "export-cdp") {
+    try {
+      const runSessionExportCdp = dependencies.runSessionExportCdp ??
+        (await import("./commands/session-export-cdp.js")).runSessionExportCdp;
+      return await runSessionExportCdp(argv.slice(2), io, {
+        ...(dependencies.env === undefined ? {} : { env: dependencies.env }),
+        ...(parsedGlobal.accountAlias === undefined ? {} : { config: await config() }),
+      });
     } catch (error) {
       return emitError(io, error);
     }
@@ -229,7 +259,7 @@ export async function main(
     try {
       const runSessionRefreshHar = (await import("./commands/session-refresh-har.js"))
         .runSessionRefreshHar;
-      return await runSessionRefreshHar(argv.slice(2), io);
+      return await runSessionRefreshHar(argv.slice(2), io, { config: await config() });
     } catch (error) {
       return emitError(io, error);
     }
@@ -237,7 +267,7 @@ export async function main(
   if (argv.length >= 2 && argv[0] === "session" && argv[1] === "login") {
     try {
       const runSessionLogin = (await import("./commands/session-login.js")).runSessionLogin;
-      return await runSessionLogin(argv.slice(2), io);
+      return await runSessionLogin(argv.slice(2), io, { config: await config() });
     } catch (error) {
       return emitError(io, error);
     }
@@ -310,7 +340,7 @@ export async function main(
       const runGatewayStatus = (await import("./commands/gateway-status.js")).runGatewayStatus;
       return await runGatewayStatus(
         io,
-        dependencies.createGatewayStatusClient ?? createConfiguredGatewayStatusClient,
+        async () => (dependencies.createGatewayStatusClient ?? createConfiguredGatewayStatusClient)(await config()),
       );
     } catch (error) {
       return emitError(io, error);

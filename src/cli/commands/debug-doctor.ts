@@ -2,9 +2,10 @@ import { randomUUID } from "node:crypto";
 import { mkdir, writeFile } from "node:fs/promises";
 import { dirname, resolve } from "node:path";
 import { AssetLoader } from "../../compat/asset-loader.js";
+import { getBuildProfile, type BuildId } from "../../builds.js";
 import { finalizeWebAttestation } from "../../auth/web-attestation.js";
 import { applyCookieOverrides, type CookieOverrides } from "../../auth/cookie-overrides.js";
-import { CompatibilityGuard, SUPPORTED_ASSETS } from "../../compat/guard.js";
+import { CompatibilityGuard } from "../../compat/guard.js";
 import { loadConfig, loadEnvironmentFile, type AppConfig } from "../../config.js";
 import { AppError } from "../../errors.js";
 import { loadSession } from "../../session/loader.js";
@@ -110,7 +111,11 @@ export async function runLiveCheck(
   switch (name) {
     case "assets_verified": {
       context.reportAssets = dependencies.verifyAssets === undefined
-        ? (await new CompatibilityGuard(new AssetLoader(context.config.assetDir)).verify(context.session)).assets
+        ? (await new CompatibilityGuard(
+            new AssetLoader(context.config.assetDir),
+            undefined,
+            getBuildProfile(context.session.buildId),
+          ).verify(context.session)).assets
         : await dependencies.verifyAssets(context.config, context.session);
       return;
     }
@@ -151,12 +156,14 @@ export async function runLiveCheck(
 
 export interface PreparedRuntimeDoctor {
   readonly output: "human" | "json";
+  readonly buildId?: BuildId;
   readonly verifiedAssets: FeasibilityReport["verifiedAssets"];
   readonly runCheck: (name: FeasibilityCheckName) => Promise<void>;
   readonly shutdown: () => Promise<void>;
 }
 
 export interface RuntimeDoctorDependencies {
+  readonly config?: AppConfig;
   readonly prepare?: () => Promise<PreparedRuntimeDoctor>;
   readonly writeReport?: (report: FeasibilityReport) => Promise<void>;
 }
@@ -169,40 +176,47 @@ export function applyRuntimeDoctorCookieOverrides(
 }
 
 export interface DebugAuthRenewalDependencies {
+  readonly config?: AppConfig;
   readonly env?: NodeJS.ProcessEnv;
   readonly runProbe?: () => Promise<CliAuthRenewalReport>;
 }
 
-async function prepareRuntimeDoctor(): Promise<PreparedRuntimeDoctor> {
-  loadEnvironmentFile();
-  const config = loadConfig();
+async function prepareRuntimeDoctor(config?: AppConfig): Promise<PreparedRuntimeDoctor> {
+  const selectedConfig = config ?? (() => {
+    loadEnvironmentFile();
+    return loadConfig();
+  })();
   const session = applyRuntimeDoctorCookieOverrides(
-    await loadSession(config.sessionFile),
+    await loadSession(selectedConfig.sessionFile),
     {
-      ...(config.cookieHeader === undefined ? {} : { cookieHeader: config.cookieHeader }),
-      ...(config.ssoCookieHeader === undefined ? {} : { ssoCookieHeader: config.ssoCookieHeader }),
+      ...(selectedConfig.cookieHeader === undefined ? {} : { cookieHeader: selectedConfig.cookieHeader }),
+      ...(selectedConfig.ssoCookieHeader === undefined ? {} : { ssoCookieHeader: selectedConfig.ssoCookieHeader }),
     },
   );
-  if (session.accountId !== config.accountId) {
+  if (session.accountId !== selectedConfig.accountId) {
     throw new AppError("INVALID_CONFIG", "Configured account does not match the session export");
   }
   if (process.env.SNAP_LIVE_TESTS !== "1") {
     throw new AppError("INVALID_CONFIG", "Set SNAP_LIVE_TESTS=1 to run the managed runtime gate");
   }
-  const context: LiveContext = { config, session, reportAssets: [] };
-  const sessionStore = new SealedSessionStore(config.sessionFile);
+  const context: LiveContext = { config: selectedConfig, session, reportAssets: [] };
+  const sessionStore = new SealedSessionStore(selectedConfig.sessionFile);
   const liveDependencies: LiveCheckDependencies = {
     refreshSession: async (current) => {
       const refreshed = await refreshSnapchatSession(current, {
-        attestation: (value) => finalizeWebAttestation(value.accountId, { assetDir: config.assetDir }),
+        attestation: (value) => finalizeWebAttestation(value.accountId, {
+          assetDir: selectedConfig.assetDir,
+          buildId: value.buildId,
+        }),
       });
       await sessionStore.write(refreshed);
       return refreshed;
     },
   };
   return {
-    output: config.output,
-    verifiedAssets: SUPPORTED_ASSETS,
+    output: selectedConfig.output,
+    buildId: session.buildId,
+    verifiedAssets: getBuildProfile(session.buildId).assets,
     runCheck: (name) => runLiveCheck(context, name, liveDependencies),
     shutdown: async () => {
       await context.runtime?.shutdown().catch(() => undefined);
@@ -217,9 +231,9 @@ export async function runRuntimeDoctor(
   let prepared: PreparedRuntimeDoctor | undefined;
   let report: FeasibilityReport;
   try {
-    prepared = await (dependencies.prepare ?? prepareRuntimeDoctor)();
+    prepared = await (dependencies.prepare ?? (() => prepareRuntimeDoctor(dependencies.config)))();
     report = await runFeasibilityGate({
-      buildId: "8dd50222",
+      buildId: prepared?.buildId ?? "8dd50222",
       verifiedAssets: prepared.verifiedAssets,
       runCheck: prepared.runCheck,
     });
@@ -245,7 +259,10 @@ export async function runDebugAuthRenewal(
   if (env.SNAP_LIVE_TESTS !== "1") {
     throw new AppError("INVALID_CONFIG", "Set SNAP_LIVE_TESTS=1 to run the CLI-only auth renewal probe");
   }
-  const report = await (dependencies.runProbe ?? (() => runCliAuthRenewalProbe({ env })))();
+  const report = await (dependencies.runProbe ?? (() => runCliAuthRenewalProbe({
+    env,
+    ...(dependencies.config === undefined ? {} : { config: dependencies.config }),
+  })))();
   io.stdout(JSON.stringify({ type: "debug.auth-renewal", ...report }));
   return 0;
 }

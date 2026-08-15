@@ -618,6 +618,7 @@ describe("CLI commands", () => {
     const readFile = vi.fn();
     const fetch = vi.fn();
     const readSealedSession = vi.fn();
+    const resolveConfig = vi.fn(async () => resolvedConfig);
     const originalLoadEnvFile = process.loadEnvFile;
     const loadEnvFile = vi.fn();
     const originalLiveTests = process.env.SNAP_LIVE_TESTS;
@@ -627,12 +628,13 @@ describe("CLI commands", () => {
     try {
       const code = await main([
         "debug", "auth-binding", "probe", "--request", "private/request.json", "--mode", "node-http1", "--epoch", "epoch-a",
-      ], output.value, { readFile, fetch, debugAuthBinding: { readSealedSession } });
+      ], output.value, { readFile, fetch, resolveConfig, debugAuthBinding: { readSealedSession } });
 
       expect(code).toBe(3);
       expect(output.stderr.join("\n")).toContain("INVALID_CONFIG");
       expect(readFile).not.toHaveBeenCalled();
       expect(fetch).not.toHaveBeenCalled();
+      expect(resolveConfig).toHaveBeenCalledOnce();
       expect(readSealedSession).not.toHaveBeenCalled();
       expect(loadEnvFile).not.toHaveBeenCalled();
     } finally {
