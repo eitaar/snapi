@@ -179,9 +179,13 @@ export async function main(
     }
   }
   if (argv.length === 3 && argv[0] === "debug" && argv[1] === "doctor" && argv[2] === "--runtime") {
-    const runRuntimeDoctor = dependencies.runRuntimeDoctor ??
-      (await import("./commands/debug-doctor.js")).runRuntimeDoctor;
-    return runRuntimeDoctor(io, { config: await config() });
+    try {
+      const runRuntimeDoctor = dependencies.runRuntimeDoctor ??
+        (await import("./commands/debug-doctor.js")).runRuntimeDoctor;
+      return await runRuntimeDoctor(io, { config: await config() });
+    } catch (error) {
+      return emitError(io, error);
+    }
   }
   if (argv.length === 3 && argv[0] === "debug" && argv[1] === "auth-renewal" && argv[2] === "--cli-only") {
     try {

@@ -60,6 +60,29 @@ function legacyConfig(): AppConfig {
 }
 
 describe("runtime doctor command", () => {
+  it("emits a structured CLI error when runtime doctor config resolution fails", async () => {
+    const stdout: string[] = [];
+    const stderr: string[] = [];
+    const resolveConfig = vi.fn(async () => {
+      throw new AppError("INVALID_CONFIG", "selected config is unavailable", { accountAlias: "main" });
+    });
+    const runRuntimeDoctor = vi.fn(async () => 0);
+
+    const code = await main([
+      "--account", "main", "debug", "doctor", "--runtime",
+    ], {
+      version: "0.1.0",
+      stdout: (line) => stdout.push(line),
+      stderr: (line) => stderr.push(line),
+    }, { resolveConfig, runRuntimeDoctor } as never);
+
+    expect(code).toBe(3);
+    expect(stdout).toEqual([]);
+    expect(stderr).toEqual(["INVALID_CONFIG: selected config is unavailable {\"accountAlias\":\"main\"}"]);
+    expect(resolveConfig).toHaveBeenCalledOnce();
+    expect(runRuntimeDoctor).not.toHaveBeenCalled();
+  });
+
   it("passes the legacy resolved config once into the runtime doctor route", async () => {
     const stdout: string[] = [];
     const selected = legacyConfig();
