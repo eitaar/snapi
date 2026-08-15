@@ -3,7 +3,17 @@ import { mkdtemp, readFile as readFileFromDisk, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
 import { main, type ConfiguredCliClient } from "../../src/cli/index.js";
+import type { AppConfig } from "../../src/config.js";
 import { AppError } from "../../src/errors.js";
+
+const resolvedConfig: AppConfig = {
+  sessionFile: "C:/profiles/main-session.json",
+  assetDir: "C:/profiles/main-assets",
+  lockDir: "C:/profiles/accounts/.locks",
+  accountId: "account-1",
+  buildId: "8dd50222",
+  output: "json",
+};
 
 function io() {
   const stdout: string[] = [];
@@ -111,6 +121,15 @@ function configured(overrides: Partial<ConfiguredCliClient["client"]> = {}): Con
   };
 }
 
+function withResolvedConfig<T extends Record<string, unknown>>(dependencies: T): T & {
+  readonly resolveConfig: () => Promise<AppConfig>;
+} {
+  return {
+    ...dependencies,
+    resolveConfig: async () => resolvedConfig,
+  };
+}
+
 describe("CLI commands", () => {
   it("routes chat send with an explicit conversation and does not echo plaintext", async () => {
     const output = io();
@@ -118,7 +137,7 @@ describe("CLI commands", () => {
     const createClient = vi.fn(async () => state);
     const code = await main([
       "chat", "send", "recipient-id", "private message", "--conversation-id", "conversation-id",
-    ], output.value, { createClient });
+    ], output.value, withResolvedConfig({ createClient }));
 
     expect(code).toBe(0);
     expect(state.client.sendText).toHaveBeenCalledWith({
@@ -140,7 +159,7 @@ describe("CLI commands", () => {
     });
     const code = await main([
       "chat", "send", "recipient-id", "private message", "--conversation-id", "conversation-id",
-    ], output.value, { createClient: async () => state });
+    ], output.value, withResolvedConfig({ createClient: async () => state }));
 
     expect(code).toBe(0);
     expect(JSON.parse(output.stdout[0]!)).toMatchObject({ type: "chat.sent", status: "confirmed" });
@@ -155,6 +174,67 @@ describe("CLI commands", () => {
     expect(createClient).not.toHaveBeenCalled();
   });
 
+  it("passes the resolved config to the client factory exactly once and strips the global account option", async () => {
+    const output = io();
+    const state = configured();
+    const config: AppConfig = {
+      sessionFile: "C:/profiles/bot-session.json",
+      assetDir: "C:/profiles/bot-assets",
+      lockDir: "C:/profiles/accounts/.locks",
+      accountId: "account-bot",
+      buildId: "8dd50222",
+      output: "json",
+      accountAlias: "bot",
+    };
+    const resolveConfig = vi.fn(async (accountAlias?: string) => {
+      expect(accountAlias).toBe("bot");
+      return config;
+    });
+    const createClient = vi.fn(async (receivedConfig?: AppConfig) => {
+      expect(receivedConfig).toBe(config);
+      return state;
+    });
+
+    const code = await main([
+      "--account", "bot",
+      "chat", "send", "recipient-id", "private message", "--conversation-id", "conversation-id",
+    ], output.value, { resolveConfig, createClient, env: { SNAAPI_ACCOUNT: "main" } });
+
+    expect(code).toBe(0);
+    expect(resolveConfig).toHaveBeenCalledOnce();
+    expect(createClient).toHaveBeenCalledOnce();
+    expect(state.client.sendText).toHaveBeenCalledWith({
+      recipientId: "recipient-id",
+      conversationId: "conversation-id",
+      text: "private message",
+    });
+  });
+
+  it("does not resolve an account for --version and does not mutate process.env", async () => {
+    const stdout: string[] = [];
+    const resolveConfig = vi.fn();
+    const createClient = vi.fn();
+    const originalAccount = process.env.SNAAPI_ACCOUNT;
+    process.env.SNAAPI_ACCOUNT = "main";
+
+    try {
+      const code = await main(["--version"], {
+        version: "0.1.0",
+        stdout: (line) => stdout.push(line),
+        stderr: () => undefined,
+      }, { resolveConfig, createClient });
+
+      expect(code).toBe(0);
+      expect(stdout).toEqual(["0.1.0"]);
+      expect(resolveConfig).not.toHaveBeenCalled();
+      expect(createClient).not.toHaveBeenCalled();
+      expect(process.env.SNAAPI_ACCOUNT).toBe("main");
+    } finally {
+      if (originalAccount === undefined) delete process.env.SNAAPI_ACCOUNT;
+      else process.env.SNAAPI_ACCOUNT = originalAccount;
+    }
+  });
+
   it("maps ambiguous delivery to exit 5 and redacts error details", async () => {
     const output = io();
     const state = configured({
@@ -166,7 +246,7 @@ describe("CLI commands", () => {
     });
     const code = await main([
       "chat", "send", "recipient", "text", "--conversation-id", "conversation",
-    ], output.value, { createClient: async () => state });
+    ], output.value, withResolvedConfig({ createClient: async () => state }));
     expect(code).toBe(5);
     expect(output.stderr.join("\n")).toContain("DELIVERY_UNCONFIRMED");
     expect(output.stderr.join("\n")).not.toContain("secret-sentinel");
@@ -179,10 +259,10 @@ describe("CLI commands", () => {
     const bytes = new Uint8Array([1, 2, 3]);
     const code = await main([
       "snap", "send", "recipient", "photo.png", "--conversation-id", "conversation",
-    ], output.value, {
+    ], output.value, withResolvedConfig({
       createClient: async () => state,
       readFile: async () => bytes,
-    });
+    }));
     expect(code).toBe(0);
     expect(state.client.sendPhotoSnap).toHaveBeenCalledWith({
       recipientId: "recipient",
@@ -201,10 +281,14 @@ describe("CLI commands", () => {
         throw new Error("worker cleanup timed out");
       }),
     });
-    const code = await main(["snap", "send", "recipient", "photo.png", "--conversation-id", "conversation"], output.value, {
-      createClient: async () => state,
-      readFile: async () => new Uint8Array([1, 2, 3]),
-    });
+    const code = await main(
+      ["snap", "send", "recipient", "photo.png", "--conversation-id", "conversation"],
+      output.value,
+      withResolvedConfig({
+        createClient: async () => state,
+        readFile: async () => new Uint8Array([1, 2, 3]),
+      }),
+    );
 
     expect(code).toBe(0);
     expect(JSON.parse(output.stdout[0]!)).toMatchObject({ type: "snap.sent", status: "confirmed" });
@@ -241,9 +325,9 @@ describe("CLI commands", () => {
   it("routes read-only friend listing", async () => {
     const output = io();
     const state = configured();
-    const code = await main(["friends", "list"], output.value, {
+    const code = await main(["friends", "list"], output.value, withResolvedConfig({
       createClient: async () => state,
-    });
+    }));
 
     expect(code).toBe(0);
     expect(state.client.listFriends).toHaveBeenCalledOnce();
@@ -254,9 +338,9 @@ describe("CLI commands", () => {
   it("prints intended incoming plaintext only for chat watch", async () => {
     const output = io();
     const state = configured();
-    const code = await main(["chat", "watch", "--json"], output.value, {
+    const code = await main(["chat", "watch", "--json"], output.value, withResolvedConfig({
       createClient: async () => state,
-    });
+    }));
     expect(code).toBe(0);
     expect(JSON.parse(output.stdout[0]!)).toEqual({
       type: "chat.message",

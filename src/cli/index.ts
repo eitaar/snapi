@@ -3,7 +3,7 @@
 import { createRequire } from "node:module";
 import { pathToFileURL } from "node:url";
 import { SnapchatClient } from "../client.js";
-import { loadConfig, loadEnvironmentFile } from "../config.js";
+import { loadEnvironmentFile, resolveAppConfig, type AppConfig } from "../config.js";
 import { AppError } from "../errors.js";
 import { redact } from "../logging/redact.js";
 import type { ConfiguredChatSendClient } from "./commands/chat-send.js";
@@ -13,6 +13,7 @@ import type { ConfiguredSnapWatchClient } from "./commands/snap-watch.js";
 import type { ConfiguredFriendsListClient } from "./commands/friends-list.js";
 import type { DebugAuthBindingDependencies } from "./commands/debug-auth-binding.js";
 import { createConfiguredGatewayStatusClient } from "./gateway-status-client.js";
+import { parseGlobalCliOptions } from "./global-options.js";
 import { createProcessIo, type CliIo } from "./io.js";
 
 export type ConfiguredCliClient = ConfiguredChatSendClient & ConfiguredGatewayStatusClient &
@@ -22,7 +23,8 @@ export interface CliDependencies {
   readonly runRuntimeDoctor?: (io: CliIo) => Promise<number>;
   readonly runDebugAuthRenewal?: (io: CliIo) => Promise<number>;
   readonly runSessionCheck?: (io: CliIo) => Promise<number>;
-  readonly createClient?: () => Promise<ConfiguredCliClient>;
+  readonly resolveConfig?: (accountAlias?: string) => Promise<AppConfig>;
+  readonly createClient?: (config: AppConfig) => Promise<ConfiguredCliClient>;
   readonly createGatewayStatusClient?: () => Promise<ConfiguredGatewayStatusClient>;
   readonly readFile?: (path: string) => Promise<Uint8Array>;
   readonly fetch?: typeof globalThis.fetch;
@@ -32,9 +34,7 @@ export interface CliDependencies {
   readonly debugAuthBinding?: DebugAuthBindingDependencies;
 }
 
-async function createConfiguredClient(): Promise<ConfiguredCliClient> {
-  loadEnvironmentFile();
-  const config = loadConfig();
+async function createConfiguredClient(config: AppConfig): Promise<ConfiguredCliClient> {
   return { client: await SnapchatClient.create(config), output: config.output };
 }
 
@@ -63,14 +63,38 @@ function emitError(io: CliIo, error: unknown): number {
 }
 
 export async function main(
-  argv: readonly string[],
+  inputArgv: readonly string[],
   io: CliIo,
   dependencies: CliDependencies = {},
 ): Promise<number> {
-  if (argv.length === 1 && argv[0] === "--version") {
+  if (inputArgv.length === 1 && inputArgv[0] === "--version") {
     io.stdout(io.version);
     return 0;
   }
+  let parsedGlobal;
+  try {
+    parsedGlobal = parseGlobalCliOptions(inputArgv, dependencies.env ?? process.env);
+  } catch (error) {
+    return emitError(io, error);
+  }
+  const argv = parsedGlobal.argv;
+  let configPromise: Promise<AppConfig> | undefined;
+  const config = (): Promise<AppConfig> => {
+    if (configPromise === undefined) {
+      if (dependencies.resolveConfig !== undefined) {
+        configPromise = dependencies.resolveConfig(parsedGlobal.accountAlias);
+      } else {
+        if (dependencies.env === undefined) {
+          loadEnvironmentFile();
+        }
+        configPromise = resolveAppConfig({
+          ...(parsedGlobal.accountAlias === undefined ? {} : { accountAlias: parsedGlobal.accountAlias }),
+          ...(dependencies.env === undefined ? {} : { env: dependencies.env }),
+        });
+      }
+    }
+    return configPromise;
+  };
   if (argv.length >= 2 && argv[0] === "debug" && argv[1] === "auth-binding") {
     try {
       const runDebugAuthBinding = (await import("./commands/debug-auth-binding.js")).runDebugAuthBinding;
@@ -164,7 +188,11 @@ export async function main(
   if (argv.length >= 2 && argv[0] === "chat" && argv[1] === "send") {
     try {
       const runChatSend = (await import("./commands/chat-send.js")).runChatSend;
-      return await runChatSend(argv.slice(2), io, dependencies.createClient ?? createConfiguredClient);
+      return await runChatSend(
+        argv.slice(2),
+        io,
+        async () => (dependencies.createClient ?? createConfiguredClient)(await config()),
+      );
     } catch (error) {
       return emitError(io, error);
     }
@@ -175,7 +203,7 @@ export async function main(
       return await runChatWatch(
         argv.slice(2),
         io,
-        dependencies.createClient ?? createConfiguredClient,
+        async () => (dependencies.createClient ?? createConfiguredClient)(await config()),
         dependencies.signal,
       );
     } catch (error) {
@@ -188,7 +216,7 @@ export async function main(
       return await runSnapSend(
         argv.slice(2),
         io,
-        dependencies.createClient ?? createConfiguredClient,
+        async () => (dependencies.createClient ?? createConfiguredClient)(await config()),
         dependencies.readFile,
       );
     } catch (error) {
@@ -201,7 +229,7 @@ export async function main(
       return await runSnapWatch(
         argv.slice(2),
         io,
-        dependencies.createClient ?? createConfiguredClient,
+        async () => (dependencies.createClient ?? createConfiguredClient)(await config()),
         dependencies.signal,
       );
     } catch (error) {
@@ -214,7 +242,7 @@ export async function main(
       return await runFriendsList(
         argv.slice(2),
         io,
-        dependencies.createClient ?? createConfiguredClient,
+        async () => (dependencies.createClient ?? createConfiguredClient)(await config()),
       );
     } catch (error) {
       return emitError(io, error);
@@ -232,7 +260,7 @@ export async function main(
     }
   }
 
-  io.stderr("Usage: snap <session|chat|snap|friends|gateway|debug>");
+  io.stderr("Usage: snaapi <session|chat|snap|friends|gateway|debug>");
   return 2;
 }
 
