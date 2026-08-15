@@ -169,5 +169,5 @@ describe('probe-auth-binding-http3 PowerShell contract', () => {
     expect(JSON.parse(accepted.stdout.trim())).toMatchObject({
       transportError: 'other',
     });
-  });
+  }, 60_000);
 });

@@ -1,78 +1,21 @@
 # Content Runtime Feasibility Report
 
-- Build ID: `8dd50222`
-- Started at: `2026-08-12T14:19:44.362Z`
+- Build ID: `da4d065e`
+- Started at: `2026-08-15T07:07:06.937Z`
 
 ## Verified assets
 
 | Filename | SHA-256 | Size |
 |---|---|---:|
-| 41f8a232e0dafca526c7.js | 9ea45314e4f13777330816567d68b146e9a3e4a02973ed54560a3ca65463980b | 8977740 |
-| 4577c38d10436a1f90f1.chunk.js | e96e503d349d315c99b396bab35af25fbf6714c35fc73707df0c02accca10a13 | 66137 |
-| 269b973c69f9ca2dcc93.chunk.js | 8bcca75a45b14bc18af218f69f273109a944adb5c31b902370ac67b3e265c81f | 1550593 |
+| 9c7241693746d9324c46.js | 596fd25e3efa6e514d26953e7f92ce74e3600951a15fab05eee9361422bc82ee | 8956445 |
+| 7d1e753bedce8c25fc95.chunk.js | 1e63696c9e8fdb410a39c9d11b476a2bcaee0da13263e1627b906240ec889dbe | 66305 |
+| 4f0e6933a127015ffe00.chunk.js | a4302badad70a39f777381cd98542e2ac47499d8c11a2b33a35ae8e0e851f668 | 1418707 |
 | 903641c0ba985b2dcd13.wasm | 2ce913a96d256605ea3b9998e71a65ee93b4f736fa4289d27490ed7fa5a95cd5 | 12326439 |
 
 ## Checks
 
 | Check | Status | Duration ms | Error code | Safe error |
 |---|---|---:|---|---|
-| assets_verified | passed | 178 |  |  |
-| worker_started | passed | 18 |  |  |
-| globals_installed | passed | 3115 |  |  |
-| storage_imported | passed | 0 |  |  |
-| wasm_instantiated | passed | 0 |  |  |
-| modules_resolved | passed | 0 |  |  |
-| content_envelope_created | failed | 1 | CRYPTO_RUNTIME_FAILED | Official messaging Worker call failed |
-
-## Auth-binding investigation (sanitized)
-
-The existing operator capture private/fresh7.har was summarized offline on
-2026-08-14 with epoch label fresh7. The parser accepted the pinned
-8dd50222 marker, Gateway/Messaging token equality was true, and no
-credential value was emitted.
-
-| Context | Epoch | Operation | Endpoint | Protocol | Status | Body bytes | Body SHA-256 | Token equals epoch baseline | Route matches | Process matches | Connection matches | Conclusion |
-|---|---|---|---|---|---:|---:|---|---|---|---|---|---|
-| brave-natural | fresh7 | messaging-read | /messagingcoreservice.MessagingCoreService/DeltaSync | h3 | 200 | 65 | eeef387cb18fbaf8d7819dc8afa02334e4359eed260a7dd100b146ebed06b6cc | true | unavailable | unavailable | unavailable | browser baseline |
-| brave-natural | fresh7 | gateway-handshake | /snapchat.gateway.Gateway/WebSocketConnect | websocket | 101 | — | — | true | unavailable | unavailable | unavailable | browser baseline |
-| node-http1 | fresh7 | messaging-read | /messagingcoreservice.MessagingCoreService/DeltaSync | http/1.1 | 401 | 65 | eeef387cb18fbaf8d7819dc8afa02334e4359eed260a7dd100b146ebed06b6cc | true | unavailable | unavailable | unavailable | rejected |
-| node-http2 | fresh7 | messaging-read | /messagingcoreservice.MessagingCoreService/DeltaSync | h2 | 401 | 65 | eeef387cb18fbaf8d7819dc8afa02334e4359eed260a7dd100b146ebed06b6cc | true | unavailable | unavailable | unavailable | rejected |
-| dotnet-http3 | fresh7 | messaging-read | /messagingcoreservice.MessagingCoreService/DeltaSync | h3 | 401 | 65 | eeef387cb18fbaf8d7819dc8afa02334e4359eed260a7dd100b146ebed06b6cc | true | unavailable | unavailable | unavailable | rejected |
-| node-gateway | fresh7 | gateway-handshake | /snapchat.gateway.Gateway/WebSocketConnect | websocket | 401 | — | — | true | unavailable | unavailable | unavailable | rejected |
-
-The browser baseline contained one successful Gateway 101, five
-allowlisted read-only Messaging 200 entries, ten Messaging write-path
-entries counted as a red flag, Gateway origin https://www.snapchat.com, no
-Gateway Cookie/Authorization header, and Messaging protocol h3. The write
-entries were not used as success evidence.
-
-Reload, browser-process restart, --disable-quic h2 capture, page replay,
-Worker replay, and bootstrap perturbation were not run in this pass because
-no new operator-exported HARs were supplied. Therefore the narrowest
-supported live conclusion is insufficient-evidence: the results establish
-that the captured Browser request succeeds while Node HTTP/1.1, Node h2,
-Node Gateway, and the previously recorded .NET h3 replay fail, but they do
-not isolate token freshness, connection instance, browser process/profile,
-QUIC, TLS/client identity, browser principal, or bootstrap sequence.
-
-No conclusion here claims a DBSC key, attestation mechanism, TLS fingerprint,
-or server-side registration detail. The diagnostic layer does not make Chat,
-Snap, Gateway receive, or Gateway reconnect work by itself.
-
-## Build `da4d065e` profile (offline only)
-
-The operator capture `private/fresh8.har` was inspected offline on
-2026-08-14 after adding `da4d065e` as a separate analysis/session-schema
-profile. It contains one successful Gateway 101 with `snap-ws-auth`, three
-allowlisted Messaging 200 entries, and equal Gateway/Messaging authentication
-values. The capture also contains six Messaging write-path entries, including
-conversation/content update operations, so it is not a clean read-only
-baseline for a live probe.
-
-The capture was then used only to extract and hash the four public runtime
-assets into the ignored `private/da4d-assets` directory. Offline checks passed:
-the da4d asset manifest, build-specific Worker contract, Webpack bridge, WASM
-instantiation, official Worker startup, and Chat/Snap content construction.
-No live Chat, Snap, Gateway, or authentication probe was run from this HAR.
-It does not provide a da4d session export or persisted login-time E2EE state,
-so live messaging remains blocked until a matching browser export is supplied.
+| assets_verified | passed | 129 |  |  |
+| worker_started | passed | 3 |  |  |
+| globals_installed | failed | 2201 | AUTH_CONTEXT_UNAVAILABLE | SSO token refresh requires a valid exported authentication context |
