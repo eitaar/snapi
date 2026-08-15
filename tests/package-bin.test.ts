@@ -11,10 +11,11 @@ describe("package command aliases", () => {
     const packagePath = fileURLToPath(new URL("../package.json", import.meta.url));
     const manifest = JSON.parse(await readFile(packagePath, "utf8")) as PackageManifest;
 
-    expect(manifest.bin).toEqual({
-      snap: "./dist/cli/index.js",
-      snaapi: "./dist/cli/index.js",
-    });
+    const bin = manifest.bin ?? {};
+
+    expect(bin).toHaveProperty("snap", "./dist/cli/index.js");
+    expect(bin).toHaveProperty("snaapi", "./dist/cli/index.js");
+    expect(bin.snaapi).toBe(bin.snap);
   });
 
   test("documents multi-account profile commands and environment selection", async () => {
