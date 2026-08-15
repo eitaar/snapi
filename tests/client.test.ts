@@ -5,6 +5,7 @@ import type { AppConfig } from "../src/config.js";
 const config: AppConfig = {
   sessionFile: "session.json",
   assetDir: "assets",
+  lockDir: "locks",
   accountId: "account",
   buildId: "8dd50222",
   output: "json",
@@ -324,6 +325,124 @@ describe("SnapchatClient", () => {
     expect(events.indexOf("runtime.updateAuth")).toBeGreaterThan(events.indexOf("store.write"));
     expect(events.lastIndexOf("runtime.syncFriends")).toBeGreaterThan(events.indexOf("runtime.updateAuth"));
     expect(persisted.exportedAt).toBe("2026-08-12T00:05:00.000Z");
+
+    await client.close();
+  });
+
+  it("uses config.lockDir for the account lock root", async () => {
+    vi.resetModules();
+    const events: string[] = [];
+    const initialSession = {
+      formatVersion: 1 as const,
+      accountId: "account",
+      buildId: "8dd50222" as const,
+      exportedAt: "2026-08-12T00:00:00.000Z",
+      auth: {
+        httpToken: "initial-http-token",
+        gatewayToken: "initial-gateway-token",
+        tokenRefreshedAt: "2099-08-12T00:00:00.000Z",
+        cookieHeader: "initial-web-cookie",
+        ssoCookieHeader: "initial-sso-cookie",
+        requestHeaders: { "mcs-cof-ids-bin": "initial-cof-sequence" },
+      },
+      assets: [],
+      localStorage: {},
+      sessionStorage: {},
+      indexedDb: { databases: [] },
+    };
+    const constructedLockDirs: string[] = [];
+    const lock = {
+      path: "lock",
+      release: vi.fn(async () => { events.push("lock.release"); }),
+      [Symbol.asyncDispose]: async () => undefined,
+    };
+
+    vi.doMock("../src/session/sealed-store.js", () => ({
+      SealedSessionStore: class {
+        async readOrMigrateLegacy() {
+          return initialSession;
+        }
+
+        async read() {
+          return initialSession;
+        }
+
+        async write() {}
+      },
+    }));
+    vi.doMock("../src/session/account-lock.js", () => ({
+      AccountLock: class {
+        constructor(lockDir: string) {
+          constructedLockDirs.push(lockDir);
+        }
+
+        async acquire() {
+          return lock;
+        }
+      },
+    }));
+    vi.doMock("../src/compat/asset-loader.js", () => ({
+      AssetLoader: class {},
+    }));
+    vi.doMock("../src/compat/guard.js", () => ({
+      CompatibilityGuard: class {
+        async verify(): Promise<void> {}
+      },
+    }));
+    vi.doMock("../src/runtime/worker-client.js", () => ({
+      ContentRuntimeClient: class {
+        async initialize() {
+          return { buildId: "8dd50222", initializedAt: "2026-08-12T00:00:00.000Z" };
+        }
+
+        async shutdown() {
+          events.push("runtime.shutdown");
+        }
+      },
+    }));
+    vi.doMock("../src/transport/grpc-client.js", () => ({
+      GrpcWebClient: class {},
+    }));
+    vi.doMock("../src/messaging/client.js", () => ({
+      MessagingClient: class {
+        sendText = vi.fn(async () => ({ clientMessageId: "message-id", status: "confirmed" as const }));
+        messages = vi.fn(() => (async function* () {})());
+      },
+    }));
+    vi.doMock("../src/media/client.js", () => ({
+      MediaClient: class {
+        sendPhotoSnap = vi.fn(async () => ({ clientMessageId: "photo-id", status: "confirmed" as const }));
+      },
+    }));
+    vi.doMock("../src/friends/client.js", () => ({
+      FriendsClient: class {
+        list = vi.fn(async () => ({
+          syncedAt: "2026-08-12T00:00:00.000Z",
+          status: "success" as const,
+          friends: [],
+          incomingRequests: [],
+        }));
+
+        listEasy = vi.fn(async () => ({ friends: [] }));
+      },
+    }));
+    vi.doMock("../src/gateway/client.js", () => ({
+      GatewayClient: class {
+        async connect(): Promise<void> {}
+        async close(): Promise<void> {}
+        status() { return "idle" as const; }
+        async *events() {}
+      },
+    }));
+
+    const { SnapchatClient: ComposeDefaultClient } = await import("../src/client.js");
+    const client = await ComposeDefaultClient.create({
+      ...config,
+      sessionFile: "nested/session.json",
+      lockDir: "shared/profile-locks",
+    });
+
+    expect(constructedLockDirs).toEqual(["shared/profile-locks"]);
 
     await client.close();
   });

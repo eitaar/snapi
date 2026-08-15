@@ -1,4 +1,3 @@
-import { dirname, join } from "node:path";
 import { applyCookieOverrides } from "./auth/cookie-overrides.js";
 import { finalizeWebAttestation } from "./auth/web-attestation.js";
 import { AssetLoader } from "./compat/asset-loader.js";
@@ -97,7 +96,7 @@ async function composeDefault(config: AppConfig): Promise<SnapchatClientComponen
     ...(config.cookieHeader === undefined ? {} : { cookieHeader: config.cookieHeader }),
     ...(manualSsoCookieHeader === undefined ? {} : { ssoCookieHeader: manualSsoCookieHeader }),
   });
-  const lock = await new AccountLock(join(dirname(config.sessionFile), "locks")).acquire(config.accountId);
+  const lock = await new AccountLock(config.lockDir).acquire(config.accountId);
   let runtime: ContentRuntimeClient | undefined;
   try {
     await new CompatibilityGuard(new AssetLoader(config.assetDir)).verify(authSession);

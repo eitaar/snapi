@@ -7,6 +7,7 @@ function context(): LiveContext {
   const config: AppConfig = {
     sessionFile: "session.json",
     assetDir: "assets",
+    lockDir: "locks",
     accountId: "account-1",
     buildId: "8dd50222",
     output: "human",

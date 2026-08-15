@@ -44,6 +44,7 @@ function config() {
   return {
     sessionFile: "private/session.json",
     assetDir: "private/assets",
+    lockDir: "private/locks",
     accountId: "11111111-2222-4333-8444-555555555555",
     buildId: "8dd50222" as const,
     output: "json" as const,

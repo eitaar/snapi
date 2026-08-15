@@ -12,6 +12,7 @@ function io() {
 const config: AppConfig = {
   sessionFile: "private/session.json",
   assetDir: "private/assets",
+  lockDir: "private/locks",
   accountId: "account-1",
   buildId: "8dd50222",
   output: "json",
